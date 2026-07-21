@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Apple USB-C to 3.5mm Adapter -->
+    <!-- VID 0x05AC = 1452 decimal, PID 0x110A = 4362 decimal -->
+    <usb-device vendor-id="1452" product-id="4362" />
+</resources>

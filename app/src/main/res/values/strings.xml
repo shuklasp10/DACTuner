@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DACTuner</string>
+    <string name="dac_connected">Apple USB-C DAC connected</string>
+    <string name="dac_disconnected">No supported DAC connected</string>
+    <string name="configure_now">Configure Now</string>
+    <string name="auto_configure">Auto Configure</string>
+    <string name="notification_channel_name">DAC Configuration</string>
+    <string name="notification_channel_description">Notifications for DAC configuration events</string>
+</resources>
