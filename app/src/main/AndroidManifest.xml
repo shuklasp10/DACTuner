@@ -36,9 +36,5 @@
                 android:resource="@xml/usb_device_filter" />
         </activity>
 
-        <receiver
-            android:name=".entry.UsbEventReceiver"
-            android:exported="false" />
-
     </application>
 </manifest>
