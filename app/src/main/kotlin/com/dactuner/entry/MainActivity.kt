@@ -33,9 +33,9 @@ class MainActivity : ComponentActivity() {
      * Runtime-registered receiver for USB_DEVICE_DETACHED events.
      * Registered in onResume, unregistered in onPause.
      */
-    private val usbDetachReceiver = UsbEventReceiver { _, _ ->
+    private val usbDetachReceiver = UsbEventReceiver { vendorId, productId ->
         // On any USB detach, re-check connected devices to update state
-        checkConnectedDevices()
+        checkConnectedDevices(detachedVendorId = vendorId, detachedProductId = productId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,7 +111,7 @@ class MainActivity : ComponentActivity() {
      * Scans currently connected USB devices and updates the ViewModel.
      * Called in onResume and after USB detach events.
      */
-    private fun checkConnectedDevices() {
+    private fun checkConnectedDevices(detachedVendorId: Int? = null, detachedProductId: Int? = null) {
         val app = application as DacTunerApplication
         val connectedDevices = app.usbDeviceManager.getConnectedDevices()
         var foundSupportedDevice = false
@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
         if (!foundSupportedDevice &&
             viewModel.uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED
         ) {
-            viewModel.onDacDisconnected()
+            viewModel.onDacDisconnected(detachedVendorId, detachedProductId)
         }
     }
 

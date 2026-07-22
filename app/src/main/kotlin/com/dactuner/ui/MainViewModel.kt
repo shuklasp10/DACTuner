@@ -26,6 +26,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val dacIdentifier = app.dacIdentifier
     private val logger = app.diagnosticsLogger
 
+    private var expectedResetVidPid: Pair<Int, Int>? = null
+    private var expectedResetUntil: Long = 0L
+
+    companion object {
+        // Observed reconnect took ~2.8s on the S21 FE; leave margin.
+        private const val RESET_GRACE_PERIOD_MS = 6000L
+    }
+
     private val _uiState = MutableStateFlow(UiState.default())
 
     /** Observable UI state for the Compose UI. */
@@ -44,14 +52,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onDacConnected(vendorId: Int, productId: Int, deviceName: String?) {
         val profile = dacIdentifier.identify(vendorId, productId)
         if (profile != null) {
+            val isExpectedReset = expectedResetVidPid == (vendorId to productId) &&
+                System.currentTimeMillis() < expectedResetUntil
+
             logger.log(
                 "VIEWMODEL",
-                "Supported DAC detected: ${profile.name} " +
-                        "(${String.format("%04X:%04X", profile.vendorId, profile.productId)})"
+                "Supported DAC detected: ${profile.name} (${String.format("%04X:%04X", profile.vendorId, profile.productId)})" +
+                    if (isExpectedReset) " — resuming after self-triggered reset" else ""
             )
+
             _uiState.update { state ->
                 state.copy(
-                    connectionStatus = ConnectionStatus.CONNECTED,
+                    connectionStatus = if (isExpectedReset) ConnectionStatus.CONFIGURED else ConnectionStatus.CONNECTED,
                     deviceInfo = DeviceInfo(
                         name = profile.name,
                         manufacturer = profile.manufacturer,
@@ -59,6 +71,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         uacVersion = profile.uacVersion.displayName()
                     )
                 )
+            }
+
+            if (isExpectedReset) {
+                expectedResetVidPid = null
+                expectedResetUntil = 0L
             }
         } else {
             logger.log(
@@ -75,7 +92,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * Resets the UI state to DISCONNECTED with no device info.
      */
-    fun onDacDisconnected() {
+    fun onDacDisconnected(vendorId: Int? = null, productId: Int? = null) {
+        val isExpectedReset = vendorId != null && productId != null &&
+            expectedResetVidPid == (vendorId to productId) &&
+            System.currentTimeMillis() < expectedResetUntil
+
+        if (isExpectedReset) {
+            logger.log("VIEWMODEL", "DAC disconnected as part of an expected post-configure reset — preserving state")
+            return // don't wipe deviceInfo/warnings/status; wait for the reattach
+        }
+
         logger.log("VIEWMODEL", "DAC disconnected")
         _uiState.update { state ->
             state.copy(
@@ -108,6 +134,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { currentState ->
                     when (result) {
                         is com.dactuner.core.ConfigurationResult.Success -> {
+                            if (result.phase == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
+                                expectedResetVidPid = device.vendorId to device.productId
+                                expectedResetUntil = System.currentTimeMillis() + RESET_GRACE_PERIOD_MS
+                            }
+                            
                             val replugWarning = if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S && 
                                 result.phase == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
                                 listOf(Warning.ReplugRequired("Unplug and replug the adapter to hear audio (required on this Android version)."))
