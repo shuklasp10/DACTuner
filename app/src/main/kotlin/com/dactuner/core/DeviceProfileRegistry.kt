@@ -17,7 +17,7 @@ class DeviceProfileRegistry {
             manufacturer = "Apple, Inc.",
             uacVersion = UacVersion.UAC_2_0,
             knownFeatureUnitId = null,   // Discovered at runtime via descriptor parsing
-            knownMaxVolume = null,       // Discovered at runtime via GET_MAX
+            knownMaxVolume = 0,          // Max digital volume is 0 dB (0x0000)
             variants = listOf(AdapterVariant.US_A2049, AdapterVariant.EU_A2155)
         )
     )

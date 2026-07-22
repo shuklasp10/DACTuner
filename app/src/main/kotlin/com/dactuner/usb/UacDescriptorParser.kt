@@ -114,33 +114,41 @@ class UacDescriptorParser(
         if (version == UacVersion.UAC_1_0) {
             if (length >= 7 && offset + 6 < data.size) {
                 val bControlSize = data[offset + 5].toInt() and 0xFF
-                channelCount = (length - 7) / bControlSize
-                
-                // Parse master channel controls
-                if (bControlSize >= 1 && offset + 6 < data.size) {
-                    val masterControlMask = data[offset + 6].toInt() and 0xFF
-                    if ((masterControlMask and 0x01) != 0) controls.add(FeatureControl.MUTE)
-                    if ((masterControlMask and 0x02) != 0) controls.add(FeatureControl.VOLUME)
-                    if ((masterControlMask and 0x04) != 0) controls.add(FeatureControl.BASS)
-                    if ((masterControlMask and 0x08) != 0) controls.add(FeatureControl.MID)
-                    if ((masterControlMask and 0x10) != 0) controls.add(FeatureControl.TREBLE)
+                if (bControlSize > 0) {
+                    val totalElements = (length - 7) / bControlSize
+                    channelCount = if (totalElements > 0) totalElements - 1 else 0
+                    
+                    for (i in 0 until totalElements) {
+                        val elemOffset = offset + 6 + (i * bControlSize)
+                        if (elemOffset < data.size) {
+                            val mask = data[elemOffset].toInt() and 0xFF
+                            if ((mask and 0x01) != 0) controls.add(FeatureControl.MUTE)
+                            if ((mask and 0x02) != 0) controls.add(FeatureControl.VOLUME)
+                            if ((mask and 0x04) != 0) controls.add(FeatureControl.BASS)
+                            if ((mask and 0x08) != 0) controls.add(FeatureControl.MID)
+                            if ((mask and 0x10) != 0) controls.add(FeatureControl.TREBLE)
+                        }
+                    }
                 }
             }
         } else {
             // UAC 2.0 Feature Unit
-            if (length >= 13 && offset + 8 < data.size) {
-                channelCount = (length - 6) / 4 - 1 // -1 for master channel
+            if (length >= 9 && offset + 8 < data.size) { // Length should be at least 6 + 4 = 10 for master only
+                val totalElements = (length - 6) / 4
+                channelCount = if (totalElements > 0) totalElements - 1 else 0
                 
-                // Parse master channel controls (32-bit word at offset 5)
-                val masterControlMask = (data[offset + 5].toInt() and 0xFF) or 
-                                        ((data[offset + 6].toInt() and 0xFF) shl 8) or
-                                        ((data[offset + 7].toInt() and 0xFF) shl 16) or
-                                        ((data[offset + 8].toInt() and 0xFF) shl 24)
-                                        
-                // In UAC 2.0, 2 bits per control: 01=read-only, 11=read-write
-                if ((masterControlMask and 0x03) != 0) controls.add(FeatureControl.MUTE)
-                if ((masterControlMask and 0x0C) != 0) controls.add(FeatureControl.VOLUME)
-                if ((masterControlMask and 0x30) != 0) controls.add(FeatureControl.BASS)
+                for (i in 0 until totalElements) {
+                    val elemOffset = offset + 5 + (i * 4)
+                    if (elemOffset + 3 < data.size) {
+                        val mask = (data[elemOffset].toInt() and 0xFF) or 
+                                   ((data[elemOffset + 1].toInt() and 0xFF) shl 8) or
+                                   ((data[elemOffset + 2].toInt() and 0xFF) shl 16) or
+                                   ((data[elemOffset + 3].toInt() and 0xFF) shl 24)
+                        if ((mask and 0x03) != 0) controls.add(FeatureControl.MUTE)
+                        if ((mask and 0x0C) != 0) controls.add(FeatureControl.VOLUME)
+                        if ((mask and 0x30) != 0) controls.add(FeatureControl.BASS)
+                    }
+                }
             }
         }
 

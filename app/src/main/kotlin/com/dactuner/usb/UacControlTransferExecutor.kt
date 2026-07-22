@@ -68,7 +68,7 @@ class UacControlTransferExecutor(
         val wValue = (CS_VOLUME shl 8) or channel
         val wIndex = (featureUnitId shl 8) or interfaceNumber
 
-        val result = connection.controlTransfer(
+        var result = connection.controlTransfer(
             REQ_TYPE_GET,
             REQ_GET_CUR,
             wValue,
@@ -78,7 +78,21 @@ class UacControlTransferExecutor(
             TIMEOUT_MS
         )
         
-        logger.logControlTransfer("IN", "GET_CUR", wValue, wIndex, data, result)
+        logger.logControlTransfer("IN", "GET_CUR_V1", wValue, wIndex, data, result)
+        
+        if (result < 0) {
+            // Try UAC 2.0 CUR request code (0x01) instead of 0x81
+            result = connection.controlTransfer(
+                REQ_TYPE_GET,
+                REQ_SET_CUR, // 0x01 is the CUR request code for both SET and GET in UAC 2.0
+                wValue,
+                wIndex,
+                data,
+                data.size,
+                TIMEOUT_MS
+            )
+            logger.logControlTransfer("IN", "GET_CUR_V2", wValue, wIndex, data, result)
+        }
         
         if (result >= 2) {
             val volume = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)

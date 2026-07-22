@@ -1,5 +1,7 @@
 package com.dactuner.util
 
+import android.util.Log
+
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -20,6 +22,12 @@ class DiagnosticsLogger {
      * Log a general message.
      */
     fun log(tag: String, message: String, level: LogLevel = LogLevel.INFO) {
+        when (level) {
+            LogLevel.DEBUG -> Log.d("DACTuner_$tag", message)
+            LogLevel.INFO -> Log.i("DACTuner_$tag", message)
+            LogLevel.WARNING -> Log.w("DACTuner_$tag", message)
+            LogLevel.ERROR -> Log.e("DACTuner_$tag", message)
+        }
         addEntry(LogEntry(System.currentTimeMillis(), tag, message, level))
     }
 

@@ -18,7 +18,7 @@ data class StrategyResult(
 )
 
 class InterfaceClaimStrategy(
-    private val phaseCache: PhaseCache,
+    val phaseCache: PhaseCache,
     private val logger: DiagnosticsLogger
 ) {
     suspend fun executeWithBestStrategy(
@@ -26,77 +26,95 @@ class InterfaceClaimStrategy(
         productId: Int,
         connection: UsbDeviceConnection,
         audioControlInterface: UsbInterface,
-        action: (UsbDeviceConnection) -> Boolean
+        action: suspend (UsbDeviceConnection) -> Boolean
     ): StrategyResult {
+        logger.log("CLAIM", "Executing strategy for $vendorId:$productId. Interface ID: ${audioControlInterface.id}")
+        
         // Try cached phase first
         val cachedPhase = phaseCache.getCachedPhase(vendorId, productId)
         if (cachedPhase != null) {
-            logger.log("CLAIM", "Using cached phase: $cachedPhase")
-            val success = executePhase(cachedPhase, connection, audioControlInterface, action)
-            if (success) {
+            logger.log("CLAIM", "Found cached phase: $cachedPhase. Attempting it first...")
+            val result = executePhase(cachedPhase, connection, audioControlInterface, action)
+            if (result) {
+                logger.log("CLAIM", "Cached phase $cachedPhase succeeded. Execution complete.")
                 return StrategyResult(true, cachedPhase, null)
             }
-            logger.log("CLAIM", "Cached phase failed, falling back to full strategy")
+            logger.log("CLAIM", "Cached phase $cachedPhase failed, falling back to full strategy...")
+        } else {
+            logger.log("CLAIM", "No cached phase found for $vendorId:$productId. Trying all phases...")
         }
 
-        // Phase 1: No claim
-        logger.log("CLAIM", "Trying Phase 1: No claim")
-        if (executePhase(ClaimPhase.PHASE_1_NO_CLAIM, connection, audioControlInterface, action)) {
-            phaseCache.cachePhase(vendorId, productId, ClaimPhase.PHASE_1_NO_CLAIM)
-            return StrategyResult(true, ClaimPhase.PHASE_1_NO_CLAIM, null)
+        // Try all phases in order
+        for (phase in ClaimPhase.values()) {
+            logger.log("CLAIM", "Evaluating Phase: $phase")
+            if (phase == cachedPhase) {
+                logger.log("CLAIM", "Skipping Phase $phase (already tried via cache)")
+                continue // Already tried
+            }
+            
+            val result = executePhase(phase, connection, audioControlInterface, action)
+            if (result) {
+                logger.log("CLAIM", "Phase $phase succeeded! Caching it for future use.")
+                phaseCache.cachePhase(vendorId, productId, phase)
+                return StrategyResult(true, phase, null)
+            } else {
+                logger.log("CLAIM", "Phase $phase failed.")
+            }
         }
 
-        // Phase 2: Claim without force
-        logger.log("CLAIM", "Trying Phase 2: Claim (force=false)")
-        if (executePhase(ClaimPhase.PHASE_2_CLAIM_CONTROL, connection, audioControlInterface, action)) {
-            phaseCache.cachePhase(vendorId, productId, ClaimPhase.PHASE_2_CLAIM_CONTROL)
-            return StrategyResult(true, ClaimPhase.PHASE_2_CLAIM_CONTROL, null)
-        }
-
-        // Phase 3: Force claim
-        logger.log("CLAIM", "Trying Phase 3: Claim (force=true)")
-        if (executePhase(ClaimPhase.PHASE_3_FORCE_CLAIM, connection, audioControlInterface, action)) {
-            phaseCache.cachePhase(vendorId, productId, ClaimPhase.PHASE_3_FORCE_CLAIM)
-            return StrategyResult(true, ClaimPhase.PHASE_3_FORCE_CLAIM, null)
-        }
-
+        logger.log("CLAIM", "CRITICAL: All claim phases exhausted and failed.")
         return StrategyResult(false, null, "All claim phases failed")
     }
 
-    private fun executePhase(
+    private suspend fun executePhase(
         phase: ClaimPhase,
         connection: UsbDeviceConnection,
         usbInterface: UsbInterface,
-        action: (UsbDeviceConnection) -> Boolean
+        action: suspend (UsbDeviceConnection) -> Boolean
     ): Boolean {
         return try {
             when (phase) {
                 ClaimPhase.PHASE_1_NO_CLAIM -> {
-                    action(connection)
+                    logger.log("CLAIM", "[Phase 1] Executing action WITHOUT claiming interface ${usbInterface.id}")
+                    val result = action(connection)
+                    logger.log("CLAIM", "[Phase 1] Action returned: $result")
+                    result
                 }
                 ClaimPhase.PHASE_2_CLAIM_CONTROL -> {
+                    logger.log("CLAIM", "[Phase 2] Attempting claimInterface(force=false) on interface ${usbInterface.id}")
                     val claimed = connection.claimInterface(usbInterface, false)
+                    logger.log("CLAIM", "[Phase 2] claimInterface(force=false) result: $claimed")
                     if (claimed) {
+                        logger.log("CLAIM", "[Phase 2] Executing action holding claim")
                         val result = action(connection)
+                        logger.log("CLAIM", "[Phase 2] Action finished, result: $result. Releasing interface ${usbInterface.id}")
                         connection.releaseInterface(usbInterface)
+                        logger.log("CLAIM", "[Phase 2] Interface released")
                         result
                     } else {
+                        logger.log("CLAIM", "[Phase 2] Failed to claim interface, skipping action")
                         false
                     }
                 }
                 ClaimPhase.PHASE_3_FORCE_CLAIM -> {
+                    logger.log("CLAIM", "[Phase 3] Attempting claimInterface(force=true) on interface ${usbInterface.id}")
                     val claimed = connection.claimInterface(usbInterface, true)
+                    logger.log("CLAIM", "[Phase 3] claimInterface(force=true) result: $claimed")
                     if (claimed) {
+                        logger.log("CLAIM", "[Phase 3] Executing action holding force claim")
                         val result = action(connection)
+                        logger.log("CLAIM", "[Phase 3] Action finished, result: $result. Releasing interface ${usbInterface.id}")
                         connection.releaseInterface(usbInterface)
+                        logger.log("CLAIM", "[Phase 3] Interface released")
                         result
                     } else {
+                        logger.log("CLAIM", "[Phase 3] Failed to force claim interface, skipping action")
                         false
                     }
                 }
             }
         } catch (e: Exception) {
-            logger.log("CLAIM", "Exception during phase \$phase: \${e.message}", com.dactuner.util.LogLevel.ERROR)
+            logger.log("CLAIM", "Exception during phase $phase: ${e.message}", com.dactuner.util.LogLevel.ERROR)
             false
         }
     }
