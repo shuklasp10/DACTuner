@@ -1,11 +1,13 @@
 package com.dactuner.core
 
 import android.hardware.usb.UsbDevice
+import com.dactuner.reliability.HalRaceMitigator
 import com.dactuner.usb.ClaimPhase
 import com.dactuner.usb.FeatureControl
 import com.dactuner.usb.InterfaceClaimStrategy
 import com.dactuner.usb.UacControlTransferExecutor
 import com.dactuner.usb.UsbDeviceManager
+import com.dactuner.usb.VolumeRange
 import com.dactuner.util.DiagnosticsLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,6 +17,7 @@ class ConfigurationOrchestrator(
     private val usbDeviceManager: UsbDeviceManager,
     private val claimStrategy: InterfaceClaimStrategy,
     private val controlTransferExecutor: UacControlTransferExecutor,
+    private val halRaceMitigator: HalRaceMitigator,
     private val logger: DiagnosticsLogger
 ) {
     suspend fun configureIfSupported(device: UsbDevice): ConfigurationResult = withContext(Dispatchers.IO) {
@@ -49,48 +52,73 @@ class ConfigurationOrchestrator(
             
             var maxVolumeFound = 0
             
-            val strategyResult = claimStrategy.executeWithBestStrategy(
+            if (profile.knownMaxVolume != null) {
+                maxVolumeFound = profile.knownMaxVolume
+            } else {
+                // Try channel 1 first, fallback to 0
+                val queryChannel = 1
+                var range: VolumeRange? = null
+                claimStrategy.executeWithBestStrategy(
+                    vendorId = device.vendorId,
+                    productId = device.productId,
+                    connection = usbHandle.connection,
+                    audioControlInterface = audioControlInterface
+                ) { connection ->
+                    range = controlTransferExecutor.getVolumeRange(
+                        connection = connection,
+                        featureUnitId = volumeFeatureUnit.unitId,
+                        interfaceNumber = descriptors.audioControlInterfaceNumber,
+                        channel = queryChannel
+                    )
+                    true
+                }
+                maxVolumeFound = range?.max ?: 0 // Default to 0 dB if range fails
+            }
+            
+            // Use the HalRaceMitigator to set volume and verify it sticks
+            // It will handle claiming/releasing the interface internally per-attempt
+            val result = halRaceMitigator.configureAndVerify(
                 vendorId = device.vendorId,
                 productId = device.productId,
                 connection = usbHandle.connection,
-                audioControlInterface = audioControlInterface
-            ) { connection ->
-                
-                // Get Volume Range to discover Max volume
-                val range = controlTransferExecutor.getVolumeRange(
-                    connection = connection,
-                    featureUnitId = volumeFeatureUnit.unitId,
-                    interfaceNumber = descriptors.audioControlInterfaceNumber,
-                    channel = 0 // Master channel
-                )
-                
-                maxVolumeFound = range?.max ?: 0 // Default to 0 dB if range fails
-                
-                // Set volume on Master (0), Left (1), and Right (2) channels
-                val successMaster = controlTransferExecutor.setVolume(
-                    connection, volumeFeatureUnit.unitId, descriptors.audioControlInterfaceNumber, 0, maxVolumeFound
-                )
-                val successLeft = controlTransferExecutor.setVolume(
-                    connection, volumeFeatureUnit.unitId, descriptors.audioControlInterfaceNumber, 1, maxVolumeFound
-                )
-                val successRight = controlTransferExecutor.setVolume(
-                    connection, volumeFeatureUnit.unitId, descriptors.audioControlInterfaceNumber, 2, maxVolumeFound
-                )
-                
-                // Return true if at least one channel was configured successfully
-                successMaster || successLeft || successRight
-            }
+                audioControlInterface = audioControlInterface,
+                featureUnitId = volumeFeatureUnit.unitId,
+                interfaceNumber = descriptors.audioControlInterfaceNumber,
+                channelCount = volumeFeatureUnit.channelCount,
+                targetVolume = maxVolumeFound
+            )
             
-            if (strategyResult.success) {
+            if (result.verified) {
+                val phaseUsed = claimStrategy.phaseCache.getCachedPhase(device.vendorId, device.productId)
+
+                if (phaseUsed == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        logger.log("CONFIG", "Force-claim was used — resetting device to restore kernel audio driver binding")
+                        try {
+                            val resetMethod = usbHandle.connection.javaClass.getMethod("resetDevice")
+                            val resetSuccess = resetMethod.invoke(usbHandle.connection) as? Boolean ?: false
+                            logger.log("CONFIG", "resetDevice() via reflection returned: $resetSuccess")
+                        } catch (e: Exception) {
+                            logger.log("CONFIG", "resetDevice() reflection failed: ${e.message}", com.dactuner.util.LogLevel.WARNING)
+                        }
+                    } else {
+                        logger.log(
+                            "CONFIG",
+                            "Force-claim used but device on API < 31 — cannot auto-reset; user must replug",
+                            com.dactuner.util.LogLevel.WARNING
+                        )
+                    }
+                }
+
                 return@withContext ConfigurationResult.Success(
                     volumeSet = maxVolumeFound,
                     volumeMax = maxVolumeFound,
-                    phase = strategyResult.phaseUsed
+                    phase = phaseUsed
                 )
             } else {
                 return@withContext ConfigurationResult.Failure(
                     ConfigurationError.AllPhasesFailed,
-                    phase = strategyResult.phaseUsed
+                    phase = claimStrategy.phaseCache.getCachedPhase(device.vendorId, device.productId)
                 )
             }
         }

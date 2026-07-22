@@ -14,6 +14,13 @@ class PreferencesManager(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    init {
+        if (prefs.getInt(KEY_PHASE_CACHE_VERSION, 1) < PHASE_CACHE_VERSION) {
+            clearPhaseCache()
+            prefs.edit().putInt(KEY_PHASE_CACHE_VERSION, PHASE_CACHE_VERSION).apply()
+        }
+    }
+
     /** Whether to automatically configure the DAC on USB connection. Default: true. */
     var autoConfigureEnabled: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONFIGURE, true)
@@ -70,5 +77,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_DEBUG_MODE = "debug_mode_enabled"
         private const val KEY_LAST_CONFIGURED = "last_configured_timestamp"
         private const val KEY_PHASE_CACHE_PREFIX = "phase_cache_"
+        private const val PHASE_CACHE_VERSION = 2
+        private const val KEY_PHASE_CACHE_VERSION = "phase_cache_version"
     }
 }

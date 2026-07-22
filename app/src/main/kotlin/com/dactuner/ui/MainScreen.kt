@@ -72,7 +72,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(32.dp))
 
                 // Configure button
-                if (uiState.connectionStatus == ConnectionStatus.CONNECTED) {
+                if (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONFIGURED) {
                     androidx.compose.material3.Button(
                         onClick = { viewModel.configureConnectedDac() },
                         enabled = uiState.configurationStatus != ConfigurationStatus.CONFIGURING,

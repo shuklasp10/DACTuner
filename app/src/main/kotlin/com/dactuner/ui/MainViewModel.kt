@@ -108,15 +108,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { currentState ->
                     when (result) {
                         is com.dactuner.core.ConfigurationResult.Success -> {
+                            val replugWarning = if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S && 
+                                result.phase == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
+                                listOf(Warning.ReplugRequired("Unplug and replug the adapter to hear audio (required on this Android version)."))
+                            } else {
+                                emptyList()
+                            }
+                            
                             currentState.copy(
+                                connectionStatus = ConnectionStatus.CONFIGURED,
                                 configurationStatus = ConfigurationStatus.SUCCESS,
-                                warnings = listOf(Warning.GeneralError("Configured phase: ${result.phase}")) // Temporary for testing
+                                warnings = replugWarning,
+                                lastConfiguredTimestamp = System.currentTimeMillis()
                             )
                         }
                         is com.dactuner.core.ConfigurationResult.PartialSuccess -> {
                             currentState.copy(
-                                configurationStatus = ConfigurationStatus.SUCCESS,
-                                warnings = listOf(Warning.ConfigPartialSuccess(result.reason))
+                                connectionStatus = ConnectionStatus.CONFIGURED,
+                                configurationStatus = ConfigurationStatus.PARTIAL_SUCCESS,
+                                warnings = listOf(Warning.ConfigPartialSuccess(result.reason)),
+                                lastConfiguredTimestamp = System.currentTimeMillis()
                             )
                         }
                         is com.dactuner.core.ConfigurationResult.Failure -> {

@@ -93,6 +93,9 @@ sealed class Warning {
     
     /** General error for displaying error messages in UI. */
     data class GeneralError(override val message: String) : Warning()
+    
+    /** Indicates the device needs to be replugged for audio to work (API < 31 fallback). */
+    data class ReplugRequired(override val message: String) : Warning()
 }
 
 /**

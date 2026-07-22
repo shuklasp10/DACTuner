@@ -55,6 +55,10 @@ class DacTunerApplication : Application() {
     lateinit var controlTransferExecutor: com.dactuner.usb.UacControlTransferExecutor
         private set
 
+    /** Mitigates HAL race conditions when setting volume. */
+    lateinit var halRaceMitigator: com.dactuner.reliability.HalRaceMitigator
+        private set
+
     /** Orchestrates the DAC configuration process. */
     lateinit var configurationOrchestrator: com.dactuner.core.ConfigurationOrchestrator
         private set
@@ -82,11 +86,14 @@ class DacTunerApplication : Application() {
         controlTransferExecutor = com.dactuner.usb.UacControlTransferExecutor(diagnosticsLogger)
 
         // Initialize orchestrator
+        halRaceMitigator = com.dactuner.reliability.HalRaceMitigator(controlTransferExecutor, interfaceClaimStrategy, diagnosticsLogger)
+        
         configurationOrchestrator = com.dactuner.core.ConfigurationOrchestrator(
             dacIdentifier,
             usbDeviceManager,
             interfaceClaimStrategy,
             controlTransferExecutor,
+            halRaceMitigator,
             diagnosticsLogger
         )
 

@@ -1,0 +1,2561 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: app/src/main/kotlin/**/*.kt
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+app/
+  src/
+    main/
+      kotlin/
+        com/
+          dactuner/
+            core/
+              ConfigurationOrchestrator.kt
+              ConfigurationResult.kt
+              DacIdentifier.kt
+              DeviceProfileRegistry.kt
+            entry/
+              MainActivity.kt
+              UsbEventReceiver.kt
+            reliability/
+              HalRaceMitigator.kt
+              PhaseCache.kt
+            ui/
+              theme/
+                Color.kt
+                Theme.kt
+                Typography.kt
+              MainScreen.kt
+              MainViewModel.kt
+              UiState.kt
+            usb/
+              InterfaceClaimStrategy.kt
+              UacControlTransferExecutor.kt
+              UacDescriptorParser.kt
+              UacDescriptors.kt
+              UsbConnectionHandle.kt
+              UsbDeviceManager.kt
+              VolumeRange.kt
+            util/
+              DiagnosticsLogger.kt
+              NotificationHelper.kt
+              PreferencesManager.kt
+            DacTunerApplication.kt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/src/main/kotlin/com/dactuner/reliability/HalRaceMitigator.kt">
+package com.dactuner.reliability
+
+import android.hardware.usb.UsbDeviceConnection
+import com.dactuner.usb.UacControlTransferExecutor
+import com.dactuner.util.DiagnosticsLogger
+import kotlinx.coroutines.delay
+import android.hardware.usb.UsbInterface
+import com.dactuner.usb.InterfaceClaimStrategy
+
+data class MitigationResult(
+    val verified: Boolean,
+    val attemptsUsed: Int
+)
+
+class HalRaceMitigator(
+    private val controlTransferExecutor: UacControlTransferExecutor,
+    private val claimStrategy: InterfaceClaimStrategy,
+    private val logger: DiagnosticsLogger
+) {
+    /**
+     * Executes the volume set command and then verifies that the volume sticks.
+     * Android's AudioService often races us to set the volume on attach, which can
+     * overwrite our command. We retry with increasing delays until it verifies or times out.
+     */
+    suspend fun configureAndVerify(
+        vendorId: Int,
+        productId: Int,
+        connection: UsbDeviceConnection,
+        audioControlInterface: UsbInterface,
+        featureUnitId: Int,
+        interfaceNumber: Int,
+        channelCount: Int,
+        targetVolume: Int
+    ): MitigationResult {
+        // Delays between attempts. First attempt is immediate (0ms delay before firing).
+        // Then we wait a bit, check if it stuck. If not, wait longer and fire again.
+        val delays = listOf(50L, 500L, 1500L, 2500L)
+        
+        logger.log("HAL_RACE", "Starting configureAndVerify loop. Target volume: $targetVolume, channelCount: $channelCount")
+        
+        for ((attempt, delayMs) in delays.withIndex()) {
+            logger.log("HAL_RACE", "--- Attempt ${attempt + 1}/${delays.size} ---")
+            var setAny = false
+            
+            // Unconditionally set all channels, claiming interface around the entire set block
+            logger.log("HAL_RACE", "Requesting claim strategy to execute SET_CUR block...")
+            claimStrategy.executeWithBestStrategy(vendorId, productId, connection, audioControlInterface) { conn ->
+                logger.log("HAL_RACE", "Claim acquired for SET_CUR block. Iterating channels 0 to $channelCount...")
+                for (ch in 0..channelCount) {
+                    logger.log("HAL_RACE", "Setting volume on channel $ch to $targetVolume...")
+                    val success = controlTransferExecutor.setVolume(
+                        conn, featureUnitId, interfaceNumber, ch, targetVolume
+                    )
+                    logger.log("HAL_RACE", "Set volume on channel $ch result: $success")
+                    if (success) setAny = true
+                }
+                logger.log("HAL_RACE", "Finished iterating channels. Releasing claim.")
+                setAny
+            }
+            
+            if (!setAny) {
+                logger.log("HAL_RACE", "All setVolume calls failed on attempt ${attempt + 1}")
+            } else {
+                logger.log("HAL_RACE", "Successfully sent at least one SET_CUR command.")
+            }
+            
+            logger.log("HAL_RACE", "Yielding (delay) for ${delayMs}ms to let HAL settle WITHOUT holding the claim...")
+            delay(delayMs)
+            logger.log("HAL_RACE", "Woke up from delay. Requesting claim strategy to verify volume...")
+            
+            // Verify by claiming interface just for the get requests
+            var currentVolume: Int? = null
+            claimStrategy.executeWithBestStrategy(vendorId, productId, connection, audioControlInterface) { conn ->
+                logger.log("HAL_RACE", "Claim acquired for GET_CUR block. Attempting to read Channel 1...")
+                currentVolume = controlTransferExecutor.getVolume(
+                    conn, featureUnitId, interfaceNumber, 1
+                )
+                if (currentVolume == null) {
+                    logger.log("HAL_RACE", "Failed to read Channel 1, falling back to Channel 0 (Master)...")
+                    currentVolume = controlTransferExecutor.getVolume(
+                        conn, featureUnitId, interfaceNumber, 0
+                    )
+                }
+                logger.log("HAL_RACE", "Finished GET_CUR block. Read volume: $currentVolume. Releasing claim.")
+                currentVolume != null
+            }
+            
+            if (currentVolume != null && currentVolume!! >= targetVolume) {
+                logger.log("HAL_RACE", "Volume successfully verified at $currentVolume on attempt ${attempt + 1}")
+                return MitigationResult(verified = true, attemptsUsed = attempt + 1)
+            }
+            
+            logger.log(
+                "HAL_RACE", 
+                "Volume reset detected! (Target: $targetVolume, Found: ${currentVolume ?: "null"}). " +
+                "Attempt ${attempt + 1} failed, retrying..."
+            )
+        }
+        
+        logger.log("HAL_RACE", "CRITICAL: Failed to mitigate HAL race condition after ${delays.size} attempts.")
+        return MitigationResult(verified = false, attemptsUsed = delays.size)
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/core/ConfigurationOrchestrator.kt">
+package com.dactuner.core
+
+import android.hardware.usb.UsbDevice
+import com.dactuner.reliability.HalRaceMitigator
+import com.dactuner.usb.ClaimPhase
+import com.dactuner.usb.FeatureControl
+import com.dactuner.usb.InterfaceClaimStrategy
+import com.dactuner.usb.UacControlTransferExecutor
+import com.dactuner.usb.UsbDeviceManager
+import com.dactuner.usb.VolumeRange
+import com.dactuner.util.DiagnosticsLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class ConfigurationOrchestrator(
+    private val dacIdentifier: DacIdentifier,
+    private val usbDeviceManager: UsbDeviceManager,
+    private val claimStrategy: InterfaceClaimStrategy,
+    private val controlTransferExecutor: UacControlTransferExecutor,
+    private val halRaceMitigator: HalRaceMitigator,
+    private val logger: DiagnosticsLogger
+) {
+    suspend fun configureIfSupported(device: UsbDevice): ConfigurationResult = withContext(Dispatchers.IO) {
+        val profile = dacIdentifier.identify(device.vendorId, device.productId)
+        if (profile == null) {
+            return@withContext ConfigurationResult.Failure(ConfigurationError.DeviceNotFound)
+        }
+
+        if (!usbDeviceManager.hasPermission(device)) {
+            return@withContext ConfigurationResult.Failure(ConfigurationError.PermissionDenied)
+        }
+
+        val handle = usbDeviceManager.openConnection(device)
+            ?: return@withContext ConfigurationResult.Failure(ConfigurationError.DeviceBusy)
+
+        handle.use { usbHandle ->
+            val descriptors = usbHandle.descriptors
+            if (descriptors.audioControlInterfaceNumber < 0) {
+                return@withContext ConfigurationResult.Failure(ConfigurationError.DescriptorParseFailure)
+            }
+            
+            // Find the feature unit that supports volume control
+            val volumeFeatureUnit = descriptors.featureUnits.find { fu ->
+                fu.controls.contains(FeatureControl.VOLUME)
+            }
+            
+            if (volumeFeatureUnit == null) {
+                return@withContext ConfigurationResult.Failure(ConfigurationError.NoFeatureUnitFound)
+            }
+            
+            val audioControlInterface = usbHandle.device.getInterface(descriptors.audioControlInterfaceNumber)
+            
+            var maxVolumeFound = 0
+            
+            if (profile.knownMaxVolume != null) {
+                maxVolumeFound = profile.knownMaxVolume
+            } else {
+                // Try channel 1 first, fallback to 0
+                val queryChannel = 1
+                var range: VolumeRange? = null
+                claimStrategy.executeWithBestStrategy(
+                    vendorId = device.vendorId,
+                    productId = device.productId,
+                    connection = usbHandle.connection,
+                    audioControlInterface = audioControlInterface
+                ) { connection ->
+                    range = controlTransferExecutor.getVolumeRange(
+                        connection = connection,
+                        featureUnitId = volumeFeatureUnit.unitId,
+                        interfaceNumber = descriptors.audioControlInterfaceNumber,
+                        channel = queryChannel
+                    )
+                    true
+                }
+                maxVolumeFound = range?.max ?: 0 // Default to 0 dB if range fails
+            }
+            
+            // Use the HalRaceMitigator to set volume and verify it sticks
+            // It will handle claiming/releasing the interface internally per-attempt
+            val result = halRaceMitigator.configureAndVerify(
+                vendorId = device.vendorId,
+                productId = device.productId,
+                connection = usbHandle.connection,
+                audioControlInterface = audioControlInterface,
+                featureUnitId = volumeFeatureUnit.unitId,
+                interfaceNumber = descriptors.audioControlInterfaceNumber,
+                channelCount = volumeFeatureUnit.channelCount,
+                targetVolume = maxVolumeFound
+            )
+            
+            if (result.verified) {
+                val phaseUsed = claimStrategy.phaseCache.getCachedPhase(device.vendorId, device.productId)
+
+                if (phaseUsed == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        logger.log("CONFIG", "Force-claim was used — resetting device to restore kernel audio driver binding")
+                        try {
+                            val resetMethod = usbHandle.connection.javaClass.getMethod("resetDevice")
+                            val resetSuccess = resetMethod.invoke(usbHandle.connection) as? Boolean ?: false
+                            logger.log("CONFIG", "resetDevice() via reflection returned: $resetSuccess")
+                        } catch (e: Exception) {
+                            logger.log("CONFIG", "resetDevice() reflection failed: ${e.message}", com.dactuner.util.LogLevel.WARNING)
+                        }
+                    } else {
+                        logger.log(
+                            "CONFIG",
+                            "Force-claim used but device on API < 31 — cannot auto-reset; user must replug",
+                            com.dactuner.util.LogLevel.WARNING
+                        )
+                    }
+                }
+
+                return@withContext ConfigurationResult.Success(
+                    volumeSet = maxVolumeFound,
+                    volumeMax = maxVolumeFound,
+                    phase = phaseUsed
+                )
+            } else {
+                return@withContext ConfigurationResult.Failure(
+                    ConfigurationError.AllPhasesFailed,
+                    phase = claimStrategy.phaseCache.getCachedPhase(device.vendorId, device.productId)
+                )
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/core/ConfigurationResult.kt">
+package com.dactuner.core
+
+/**
+ * Result of a DAC configuration attempt.
+ *
+ * Represents the outcome of the end-to-end configuration flow:
+ * open device → parse descriptors → set volume → verify → close.
+ *
+ * Phase 1: Stub with basic success/failure types.
+ * Full implementation with variant detection and warnings in Phase 3-4.
+ */
+sealed class ConfigurationResult {
+
+    /**
+     * Configuration completed successfully.
+     * Volume was set to the target value and verified.
+     *
+     * @property volumeSet The volume value that was set (raw 16-bit value)
+     * @property volumeMax The maximum volume value reported by the device
+     * @property phase The claim phase that was successful
+     */
+    data class Success(
+        val volumeSet: Int,
+        val volumeMax: Int,
+        val phase: com.dactuner.usb.ClaimPhase? = null
+    ) : ConfigurationResult()
+
+    /**
+     * Configuration partially succeeded.
+     * Volume was set but could not be verified, or was reset by the HAL.
+     *
+     * @property volumeSet The volume value that was last set
+     * @property volumeMax The maximum volume value reported by the device
+     * @property reason Human-readable explanation of why it was only partial
+     * @property phase The claim phase that was successful
+     */
+    data class PartialSuccess(
+        val volumeSet: Int,
+        val volumeMax: Int,
+        val reason: String,
+        val phase: com.dactuner.usb.ClaimPhase? = null
+    ) : ConfigurationResult()
+
+    /**
+     * Configuration failed entirely.
+     *
+     * @property error The specific error that caused the failure
+     * @property phase The claim phase that failed
+     */
+    data class Failure(
+        val error: ConfigurationError,
+        val phase: com.dactuner.usb.ClaimPhase? = null
+    ) : ConfigurationResult()
+}
+
+/**
+ * Specific error types for configuration failures.
+ *
+ * Classified into recoverable (user action can fix), degraded (partially working),
+ * and fatal (cannot configure) categories.
+ */
+sealed class ConfigurationError {
+
+    // --- Recoverable: user action can fix ---
+
+    /** User denied USB permission. */
+    data object PermissionDenied : ConfigurationError()
+
+    /** The USB device was not found or was disconnected. */
+    data object DeviceNotFound : ConfigurationError()
+
+    /** The USB device is busy (another app has claimed it). */
+    data object DeviceBusy : ConfigurationError()
+
+    // --- Fatal: cannot configure ---
+
+    /** Failed to parse USB audio descriptors. */
+    data object DescriptorParseFailure : ConfigurationError()
+
+    /** No Feature Unit with volume control was found in the descriptors. */
+    data object NoFeatureUnitFound : ConfigurationError()
+
+    /** All interface claiming phases failed. */
+    data object AllPhasesFailed : ConfigurationError()
+
+    /**
+     * A USB control transfer returned an error.
+     *
+     * @property errorCode The negative error code from controlTransfer()
+     */
+    data class ControlTransferFailed(val errorCode: Int) : ConfigurationError()
+
+    /**
+     * An unexpected exception occurred during configuration.
+     *
+     * @property throwable The exception that was caught
+     */
+    data class UnexpectedException(val throwable: Throwable) : ConfigurationError()
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/core/DacIdentifier.kt">
+package com.dactuner.core
+
+/**
+ * Identifies whether a USB device is a supported DAC.
+ *
+ * Matches USB Vendor ID and Product ID against the [DeviceProfileRegistry].
+ * Returns the matching [DacProfile] if the device is supported, or null if not.
+ *
+ * Designed to accept raw VID/PID integers so it can be unit-tested without
+ * Android framework dependencies (no UsbDevice import needed).
+ */
+class DacIdentifier(
+    private val registry: DeviceProfileRegistry
+) {
+
+    /**
+     * Identifies a DAC by its USB Vendor ID and Product ID.
+     *
+     * @param vendorId USB Vendor ID (e.g., 0x05AC for Apple)
+     * @param productId USB Product ID (e.g., 0x110A for Apple DAC)
+     * @return Matching [DacProfile] if the device is a supported DAC, or null
+     */
+    fun identify(vendorId: Int, productId: Int): DacProfile? {
+        return registry.getProfile(vendorId, productId)
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/core/DeviceProfileRegistry.kt">
+package com.dactuner.core
+
+/**
+ * Registry of known DAC device profiles.
+ *
+ * For v1.0, contains a single hardcoded entry for the Apple USB-C to 3.5mm adapter.
+ * The architecture supports extending this to a JSON file or database for multi-DAC
+ * support in future versions.
+ */
+class DeviceProfileRegistry {
+
+    private val profiles: List<DacProfile> = listOf(
+        DacProfile(
+            vendorId = APPLE_VID,
+            productId = APPLE_PID,
+            name = "Apple USB-C to 3.5mm Adapter",
+            manufacturer = "Apple, Inc.",
+            uacVersion = UacVersion.UAC_2_0,
+            knownFeatureUnitId = null,   // Discovered at runtime via descriptor parsing
+            knownMaxVolume = 0,          // Max digital volume is 0 dB (0x0000)
+            variants = listOf(AdapterVariant.US_A2049, AdapterVariant.EU_A2155)
+        )
+    )
+
+    /**
+     * Looks up a DAC profile by USB vendor ID and product ID.
+     *
+     * @param vendorId USB Vendor ID
+     * @param productId USB Product ID
+     * @return Matching [DacProfile] or null if the device is not supported
+     */
+    fun getProfile(vendorId: Int, productId: Int): DacProfile? {
+        return profiles.find { it.vendorId == vendorId && it.productId == productId }
+    }
+
+    /**
+     * Returns all registered DAC profiles.
+     */
+    fun getAllProfiles(): List<DacProfile> = profiles.toList()
+
+    companion object {
+        /** Apple, Inc. USB Vendor ID */
+        const val APPLE_VID = 0x05AC  // 1452 decimal
+
+        /** Apple USB-C to 3.5mm Adapter Product ID */
+        const val APPLE_PID = 0x110A  // 4362 decimal
+    }
+}
+
+/**
+ * Profile data for a known USB DAC device.
+ *
+ * @property vendorId USB Vendor ID (e.g., 0x05AC for Apple)
+ * @property productId USB Product ID (e.g., 0x110A for Apple DAC)
+ * @property name Human-readable device name
+ * @property manufacturer Device manufacturer name
+ * @property uacVersion USB Audio Class version supported by the device
+ * @property knownFeatureUnitId Hint for the Feature Unit ID; null means discover at runtime
+ * @property knownMaxVolume Hint for the maximum volume value; null means discover at runtime
+ * @property variants Known hardware variants of this device
+ */
+data class DacProfile(
+    val vendorId: Int,
+    val productId: Int,
+    val name: String,
+    val manufacturer: String,
+    val uacVersion: UacVersion,
+    val knownFeatureUnitId: Int?,
+    val knownMaxVolume: Int?,
+    val variants: List<AdapterVariant>
+)
+
+/**
+ * USB Audio Class version.
+ */
+enum class UacVersion {
+    /** USB Audio Class 1.0 */
+    UAC_1_0,
+
+    /** USB Audio Class 2.0 */
+    UAC_2_0;
+
+    /** Returns a human-readable display name (e.g., "UAC 2.0"). */
+    fun displayName(): String = name.replace("_", " ").replace("UAC ", "UAC ")
+}
+
+/**
+ * Known adapter hardware variants.
+ *
+ * The Apple USB-C to 3.5mm adapter comes in two models:
+ * - US model (A2049): 1.0 Vrms max output
+ * - EU model (A2155): 0.5 Vrms max output (hardware-capped for EU safety regulations)
+ */
+enum class AdapterVariant {
+    /** US model A2049 — max output 1.0 Vrms */
+    US_A2049,
+
+    /** EU model A2155 — max output 0.5 Vrms (hardware-capped) */
+    EU_A2155,
+
+    /** Variant could not be reliably determined */
+    UNKNOWN
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/entry/MainActivity.kt">
+package com.dactuner.entry
+
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.Bundle
+import android.content.Intent
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import com.dactuner.DacTunerApplication
+import com.dactuner.ui.MainScreen
+import com.dactuner.ui.MainViewModel
+import com.dactuner.ui.ConnectionStatus
+
+/**
+ * Main (and only) Activity for DACTuner.
+ *
+ * Entry points:
+ * 1. Normal launch via MAIN/LAUNCHER intent — shows UI with current DAC status.
+ * 2. Auto-launch via USB_DEVICE_ATTACHED intent — handles DAC connection,
+ *    shows UI (or can finish() for background-only config in later phases).
+ *
+ * Uses `singleTask` launch mode so that subsequent USB_DEVICE_ATTACHED intents
+ * are delivered via [onNewIntent] rather than creating new Activity instances.
+ */
+class MainActivity : ComponentActivity() {
+
+    private val viewModel: MainViewModel by viewModels()
+
+    /**
+     * Runtime-registered receiver for USB_DEVICE_DETACHED events.
+     * Registered in onResume, unregistered in onPause.
+     */
+    private val usbDetachReceiver = UsbEventReceiver { _, _ ->
+        // On any USB detach, re-check connected devices to update state
+        checkConnectedDevices()
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val app = application as DacTunerApplication
+        app.diagnosticsLogger.log("ACTIVITY", "MainActivity created")
+
+        // Handle USB_DEVICE_ATTACHED intent if launched via USB plug-in
+        handleUsbIntent(intent)
+
+        setContent {
+            MainScreen(viewModel = viewModel)
+        }
+    }
+
+    /**
+     * Called when a new intent is delivered to an already-running Activity.
+     * This happens for USB_DEVICE_ATTACHED when launchMode is singleTask.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleUsbIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        // Register for USB detach events
+        registerReceiver(
+            usbDetachReceiver,
+            IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
+            RECEIVER_NOT_EXPORTED
+        )
+
+        // Check if a supported DAC is already connected
+        checkConnectedDevices()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try {
+            unregisterReceiver(usbDetachReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Receiver was not registered — safe to ignore
+        }
+    }
+
+    /**
+     * Handles a USB_DEVICE_ATTACHED intent by extracting the device
+     * and notifying the ViewModel.
+     */
+    private fun handleUsbIntent(intent: Intent?) {
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            val device = getUsbDeviceFromIntent(intent)
+            if (device != null) {
+                val app = application as DacTunerApplication
+                app.diagnosticsLogger.log(
+                    "ACTIVITY",
+                    "USB_DEVICE_ATTACHED intent: VID=0x${String.format("%04X", device.vendorId)} " +
+                            "PID=0x${String.format("%04X", device.productId)}"
+                )
+                viewModel.onDacConnected(
+                    vendorId = device.vendorId,
+                    productId = device.productId,
+                    deviceName = device.deviceName
+                )
+            }
+        }
+    }
+
+    /**
+     * Scans currently connected USB devices and updates the ViewModel.
+     * Called in onResume and after USB detach events.
+     */
+    private fun checkConnectedDevices() {
+        val app = application as DacTunerApplication
+        val connectedDevices = app.usbDeviceManager.getConnectedDevices()
+        var foundSupportedDevice = false
+
+        for (device in connectedDevices.values) {
+            val profile = app.dacIdentifier.identify(device.vendorId, device.productId)
+            if (profile != null) {
+                viewModel.onDacConnected(
+                    vendorId = device.vendorId,
+                    productId = device.productId,
+                    deviceName = device.deviceName
+                )
+                foundSupportedDevice = true
+                break
+            }
+        }
+
+        if (!foundSupportedDevice &&
+            viewModel.uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED
+        ) {
+            viewModel.onDacDisconnected()
+        }
+    }
+
+    /**
+     * Extracts UsbDevice from intent, handling API level differences
+     * for getParcelableExtra deprecation.
+     */
+    @Suppress("DEPRECATION")
+    private fun getUsbDeviceFromIntent(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/entry/UsbEventReceiver.kt">
+package com.dactuner.entry
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
+import com.dactuner.DacTunerApplication
+
+/**
+ * BroadcastReceiver for USB device events.
+ *
+ * Handles [UsbManager.ACTION_USB_DEVICE_DETACHED] to detect when a supported
+ * DAC is disconnected. Registered at runtime in [MainActivity] during onResume/onPause.
+ *
+ * USB_DEVICE_ATTACHED is handled by [MainActivity]'s manifest intent filter, not
+ * by this receiver, because Android delivers attach events as Activity intents
+ * (not broadcasts) when a device filter is specified.
+ *
+ * @property onDeviceDetached Callback invoked when any USB device is detached.
+ *   The callback receives the VID and PID of the detached device (if available).
+ */
+class UsbEventReceiver(
+    private val onDeviceDetached: (vendorId: Int?, productId: Int?) -> Unit
+) : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val app = context.applicationContext as DacTunerApplication
+        val logger = app.diagnosticsLogger
+
+        when (intent.action) {
+            UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                val device = getUsbDeviceFromIntent(intent)
+                logger.log(
+                    "USB_EVENT",
+                    "USB device detached: " +
+                            if (device != null) {
+                                "VID=0x${String.format("%04X", device.vendorId)} " +
+                                        "PID=0x${String.format("%04X", device.productId)}"
+                            } else {
+                                "(device info unavailable)"
+                            }
+                )
+                onDeviceDetached(device?.vendorId, device?.productId)
+            }
+        }
+    }
+
+    /**
+     * Extracts the UsbDevice from the intent, handling API level differences.
+     */
+    @Suppress("DEPRECATION")
+    private fun getUsbDeviceFromIntent(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/reliability/PhaseCache.kt">
+package com.dactuner.reliability
+
+import com.dactuner.usb.ClaimPhase
+import com.dactuner.util.PreferencesManager
+
+class PhaseCache(
+    private val prefs: PreferencesManager
+) {
+    fun getCachedPhase(vendorId: Int, productId: Int): ClaimPhase? {
+        val ordinal = prefs.getCachedPhase(vendorId, productId)
+        if (ordinal != null && ordinal in 0 until ClaimPhase.entries.size) {
+            return ClaimPhase.entries[ordinal]
+        }
+        return null
+    }
+
+    fun cachePhase(vendorId: Int, productId: Int, phase: ClaimPhase) {
+        prefs.setCachedPhase(vendorId, productId, phase.ordinal)
+    }
+
+    fun clearCache() {
+        prefs.clearPhaseCache()
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/theme/Color.kt">
+package com.dactuner.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+// --- Primary palette ---
+/** Deep indigo primary color. */
+val DacPrimary = Color(0xFF7C4DFF)
+
+/** Darker indigo for active/pressed states. */
+val DacPrimaryVariant = Color(0xFF651FFF)
+
+/** Teal secondary accent color. */
+val DacSecondary = Color(0xFF03DAC6)
+
+// --- Surface and background ---
+/** Dark background for the app. */
+val DacBackground = Color(0xFF121212)
+
+/** Card and elevated surface color. */
+val DacSurface = Color(0xFF1E1E1E)
+
+/** Variant surface for secondary cards. */
+val DacSurfaceVariant = Color(0xFF2C2C2C)
+
+// --- On-colors (text/icons on top of surfaces) ---
+/** Text/icon color on primary surfaces. */
+val DacOnPrimary = Color.White
+
+/** Primary text/icon color on dark surfaces. */
+val DacOnSurface = Color(0xFFE0E0E0)
+
+/** Secondary text/icon color on dark surfaces. */
+val DacOnSurfaceVariant = Color(0xFFB0B0B0)
+
+// --- Status indicator colors ---
+/** Green — DAC configured successfully. */
+val StatusConfigured = Color(0xFF66BB6A)
+
+/** Amber — DAC connected but not yet configured. */
+val StatusConnected = Color(0xFFFFA726)
+
+/** Red — configuration failed. */
+val StatusFailed = Color(0xFFEF5350)
+
+/** Gray — no DAC connected. */
+val StatusDisconnected = Color(0xFF757575)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/theme/Theme.kt">
+package com.dactuner.ui.theme
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+
+/**
+ * DACTuner dark color scheme.
+ *
+ * Uses a sophisticated dark palette with indigo primary and teal accent.
+ * Consistent with the utility-app aesthetic: clean, premium, non-intrusive.
+ */
+private val DacTunerColorScheme = darkColorScheme(
+    primary = DacPrimary,
+    onPrimary = DacOnPrimary,
+    secondary = DacSecondary,
+    background = DacBackground,
+    surface = DacSurface,
+    surfaceVariant = DacSurfaceVariant,
+    onSurface = DacOnSurface,
+    onSurfaceVariant = DacOnSurfaceVariant
+)
+
+/**
+ * DACTuner application theme.
+ *
+ * Wraps content in a Material 3 dark theme with custom colors and typography.
+ * All composables in the app should be rendered inside this theme.
+ */
+@Composable
+fun DacTunerTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = DacTunerColorScheme,
+        typography = DacTunerTypography,
+        content = content
+    )
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/theme/Typography.kt">
+package com.dactuner.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+/**
+ * DACTuner typography scale.
+ *
+ * Uses the system default font family for a clean, native feel.
+ * Focused on the text styles actually used in the single-screen UI.
+ */
+val DacTunerTypography = Typography(
+    headlineLarge = TextStyle(
+        fontWeight = FontWeight.Bold,
+        fontSize = 28.sp,
+        letterSpacing = 0.sp
+    ),
+    headlineMedium = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 24.sp,
+        letterSpacing = 0.sp
+    ),
+    titleLarge = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp,
+        letterSpacing = 0.sp
+    ),
+    titleMedium = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        letterSpacing = 0.15.sp
+    ),
+    bodyLarge = TextStyle(
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        letterSpacing = 0.5.sp
+    ),
+    bodyMedium = TextStyle(
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        letterSpacing = 0.25.sp
+    ),
+    bodySmall = TextStyle(
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        letterSpacing = 0.4.sp
+    ),
+    labelLarge = TextStyle(
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        letterSpacing = 0.1.sp
+    ),
+    labelSmall = TextStyle(
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        letterSpacing = 0.5.sp
+    )
+)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/MainScreen.kt">
+package com.dactuner.ui
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dactuner.ui.theme.DacTunerTheme
+import com.dactuner.ui.theme.StatusConfigured
+import com.dactuner.ui.theme.StatusConnected
+import com.dactuner.ui.theme.StatusDisconnected
+import com.dactuner.ui.theme.StatusFailed
+
+/**
+ * Main screen composable for DACTuner.
+ *
+ * Phase 1: Displays connection status with animated status indicator.
+ * Phase 5: Will include full UI with configure button, settings, warnings,
+ * advanced section, and debug log viewer.
+ *
+ * The entire UI is a function of [UiState] — no side effects in composables.
+ */
+@Composable
+fun MainScreen(viewModel: MainViewModel) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    DacTunerTheme {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp, vertical = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top
+            ) {
+                // App title
+                Text(
+                    text = "DACTuner",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Spacer(modifier = Modifier.height(48.dp))
+
+                // Status card
+                DeviceStatusCard(uiState = uiState)
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                // Configure button
+                if (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONFIGURED) {
+                    androidx.compose.material3.Button(
+                        onClick = { viewModel.configureConnectedDac() },
+                        enabled = uiState.configurationStatus != ConfigurationStatus.CONFIGURING,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (uiState.configurationStatus == ConfigurationStatus.CONFIGURING) {
+                            Text("Configuring...")
+                        } else {
+                            Text("Configure DAC Volume")
+                        }
+                    }
+                }
+                
+                if (uiState.warnings.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = uiState.warnings.joinToString("\n"),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Card showing the DAC connection status with an animated indicator.
+ *
+ * Displays:
+ * - Color-coded status circle (gray/amber/green/red)
+ * - Device name or "No supported DAC connected"
+ * - Status description text
+ */
+@Composable
+private fun DeviceStatusCard(uiState: UiState) {
+    // Animate status indicator color transitions
+    val statusColor by animateColorAsState(
+        targetValue = when (uiState.connectionStatus) {
+            ConnectionStatus.DISCONNECTED -> StatusDisconnected
+            ConnectionStatus.CONNECTED -> StatusConnected
+            ConnectionStatus.CONFIGURED -> StatusConfigured
+            ConnectionStatus.FAILED -> StatusFailed
+        },
+        animationSpec = tween(durationMillis = 500),
+        label = "statusColor"
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Animated status indicator
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .background(
+                        color = statusColor.copy(alpha = 0.12f),
+                        shape = CircleShape
+                    )
+                    .border(
+                        width = 2.dp,
+                        color = statusColor.copy(alpha = 0.5f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(color = statusColor, shape = CircleShape)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Device name or fallback text
+            Text(
+                text = uiState.deviceInfo?.name ?: "No supported DAC connected",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Status description
+            Text(
+                text = when (uiState.connectionStatus) {
+                    ConnectionStatus.DISCONNECTED ->
+                        "Plug in your Apple USB-C adapter to get started"
+                    ConnectionStatus.CONNECTED ->
+                        "Connected \u2014 ready to configure"
+                    ConnectionStatus.CONFIGURED ->
+                        "\u2713 Configured at maximum volume"
+                    ConnectionStatus.FAILED ->
+                        "Configuration failed \u2014 see details below"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+
+            // Show VID/PID when connected
+            if (uiState.deviceInfo != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "VID/PID: ${uiState.deviceInfo.vidPid}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/MainViewModel.kt">
+package com.dactuner.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.dactuner.DacTunerApplication
+import com.dactuner.util.LogLevel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * ViewModel for the main screen.
+ *
+ * Manages [UiState] as a [StateFlow] for the Compose UI to observe.
+ * Coordinates between USB events (from Activity/Receiver) and UI state.
+ *
+ * Phase 1: Handles connection/disconnection state only.
+ * Phase 2+: Will coordinate full configuration flow via ConfigurationOrchestrator.
+ */
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val app = application as DacTunerApplication
+    private val dacIdentifier = app.dacIdentifier
+    private val logger = app.diagnosticsLogger
+
+    private val _uiState = MutableStateFlow(UiState.default())
+
+    /** Observable UI state for the Compose UI. */
+    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    /**
+     * Called when a supported DAC device is connected.
+     *
+     * Identifies the device via [DacIdentifier] and updates the UI state
+     * to show the device info and CONNECTED status.
+     *
+     * @param vendorId USB Vendor ID of the connected device
+     * @param productId USB Product ID of the connected device
+     * @param deviceName Optional device name string from Android USB subsystem
+     */
+    fun onDacConnected(vendorId: Int, productId: Int, deviceName: String?) {
+        val profile = dacIdentifier.identify(vendorId, productId)
+        if (profile != null) {
+            logger.log(
+                "VIEWMODEL",
+                "Supported DAC detected: ${profile.name} " +
+                        "(${String.format("%04X:%04X", profile.vendorId, profile.productId)})"
+            )
+            _uiState.update { state ->
+                state.copy(
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                    deviceInfo = DeviceInfo(
+                        name = profile.name,
+                        manufacturer = profile.manufacturer,
+                        vidPid = String.format("%04X:%04X", profile.vendorId, profile.productId),
+                        uacVersion = profile.uacVersion.displayName()
+                    )
+                )
+            }
+        } else {
+            logger.log(
+                "VIEWMODEL",
+                "Unsupported USB device ignored: " +
+                        String.format("%04X:%04X", vendorId, productId),
+                LogLevel.WARNING
+            )
+        }
+    }
+
+    /**
+     * Called when the supported DAC device is disconnected.
+     *
+     * Resets the UI state to DISCONNECTED with no device info.
+     */
+    fun onDacDisconnected() {
+        logger.log("VIEWMODEL", "DAC disconnected")
+        _uiState.update { state ->
+            state.copy(
+                connectionStatus = ConnectionStatus.DISCONNECTED,
+                configurationStatus = ConfigurationStatus.IDLE,
+                deviceInfo = null,
+                warnings = emptyList()
+            )
+        }
+    }
+
+    /**
+     * Triggers manual configuration of the currently connected DAC.
+     */
+    fun configureConnectedDac() {
+        val state = _uiState.value
+        if (state.connectionStatus != ConnectionStatus.CONNECTED) return
+        
+        viewModelScope.launch {
+            _uiState.update { it.copy(configurationStatus = ConfigurationStatus.CONFIGURING) }
+            
+            val connectedDevices = app.usbDeviceManager.getConnectedDevices()
+            val device = connectedDevices.values.find { 
+                String.format("%04X:%04X", it.vendorId, it.productId) == state.deviceInfo?.vidPid 
+            }
+            
+            if (device != null) {
+                val result = app.configurationOrchestrator.configureIfSupported(device)
+                
+                _uiState.update { currentState ->
+                    when (result) {
+                        is com.dactuner.core.ConfigurationResult.Success -> {
+                            val replugWarning = if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S && 
+                                result.phase == com.dactuner.usb.ClaimPhase.PHASE_3_FORCE_CLAIM) {
+                                listOf(Warning.ReplugRequired("Unplug and replug the adapter to hear audio (required on this Android version)."))
+                            } else {
+                                emptyList()
+                            }
+                            
+                            currentState.copy(
+                                connectionStatus = ConnectionStatus.CONFIGURED,
+                                configurationStatus = ConfigurationStatus.SUCCESS,
+                                warnings = replugWarning,
+                                lastConfiguredTimestamp = System.currentTimeMillis()
+                            )
+                        }
+                        is com.dactuner.core.ConfigurationResult.PartialSuccess -> {
+                            currentState.copy(
+                                connectionStatus = ConnectionStatus.CONFIGURED,
+                                configurationStatus = ConfigurationStatus.PARTIAL_SUCCESS,
+                                warnings = listOf(Warning.ConfigPartialSuccess(result.reason)),
+                                lastConfiguredTimestamp = System.currentTimeMillis()
+                            )
+                        }
+                        is com.dactuner.core.ConfigurationResult.Failure -> {
+                            currentState.copy(
+                                configurationStatus = ConfigurationStatus.FAILED,
+                                warnings = listOf(Warning.GeneralError("Configuration failed: ${result.error}"))
+                            )
+                        }
+                    }
+                }
+            } else {
+                 _uiState.update { it.copy(
+                    configurationStatus = ConfigurationStatus.FAILED,
+                    warnings = listOf(Warning.GeneralError("Device not found"))
+                )}
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/ui/UiState.kt">
+package com.dactuner.ui
+
+import com.dactuner.core.AdapterVariant
+
+/**
+ * Immutable UI state for the main screen.
+ *
+ * The entire UI is a function of this state — no mutable state in composables.
+ * Updated via [MainViewModel] using copy() for immutable state transitions.
+ */
+data class UiState(
+    val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
+    val configurationStatus: ConfigurationStatus = ConfigurationStatus.IDLE,
+    val deviceInfo: DeviceInfo? = null,
+    val warnings: List<Warning> = emptyList(),
+    val lastConfiguredTimestamp: Long? = null,
+    val settings: AppSettings = AppSettings()
+) {
+    companion object {
+        /** Creates a default UiState with all fields at their initial values. */
+        fun default() = UiState()
+    }
+}
+
+/**
+ * Connection status of the supported DAC device.
+ */
+enum class ConnectionStatus {
+    /** No supported DAC is connected. */
+    DISCONNECTED,
+
+    /** A supported DAC is connected but not yet configured. */
+    CONNECTED,
+
+    /** The DAC has been successfully configured. */
+    CONFIGURED,
+
+    /** Configuration was attempted but failed. */
+    FAILED
+}
+
+/**
+ * Status of the DAC configuration operation.
+ */
+enum class ConfigurationStatus {
+    /** No configuration in progress. */
+    IDLE,
+
+    /** Configuration is currently running. */
+    CONFIGURING,
+
+    /** Configuration completed successfully. */
+    SUCCESS,
+
+    /** Configuration partially succeeded (e.g., HAL race detected). */
+    PARTIAL_SUCCESS,
+
+    /** Configuration failed. */
+    FAILED
+}
+
+/**
+ * Information about the connected DAC device for display in the UI.
+ *
+ * All fields are pre-formatted strings ready for display.
+ */
+data class DeviceInfo(
+    val name: String,
+    val manufacturer: String,
+    val vidPid: String,
+    val uacVersion: String,
+    val featureUnitId: String = "\u2014",
+    val volumeCurrent: String = "\u2014",
+    val volumeMax: String = "\u2014",
+    val volumeDb: String = "\u2014",
+    val variant: AdapterVariant = AdapterVariant.UNKNOWN
+)
+
+/**
+ * Warning types that can be displayed as banners in the UI.
+ */
+sealed class Warning {
+    abstract val message: String
+
+    /** EU adapter variant detected — informational about hardware volume cap. */
+    data class EuAdapter(override val message: String) : Warning()
+
+    /** Samsung Media Volume Limit is enabled — actionable warning. */
+    data class SamsungVolumeLimit(override val message: String) : Warning()
+
+    /** Configuration was only partially successful. */
+    data class ConfigPartialSuccess(override val message: String) : Warning()
+    
+    /** General error for displaying error messages in UI. */
+    data class GeneralError(override val message: String) : Warning()
+    
+    /** Indicates the device needs to be replugged for audio to work (API < 31 fallback). */
+    data class ReplugRequired(override val message: String) : Warning()
+}
+
+/**
+ * User-configurable app settings.
+ */
+data class AppSettings(
+    /** Auto-configure DAC on USB connection. */
+    val autoConfigureEnabled: Boolean = true,
+
+    /** Show transient notifications on configuration events. */
+    val showNotifications: Boolean = true,
+
+    /** Enable verbose debug logging and descriptor dumps. */
+    val debugModeEnabled: Boolean = false
+)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/InterfaceClaimStrategy.kt">
+package com.dactuner.usb
+
+import android.hardware.usb.UsbDeviceConnection
+import android.hardware.usb.UsbInterface
+import com.dactuner.reliability.PhaseCache
+import com.dactuner.util.DiagnosticsLogger
+
+enum class ClaimPhase {
+    PHASE_1_NO_CLAIM,
+    PHASE_2_CLAIM_CONTROL,
+    PHASE_3_FORCE_CLAIM
+}
+
+data class StrategyResult(
+    val success: Boolean,
+    val phaseUsed: ClaimPhase?,
+    val error: String?
+)
+
+class InterfaceClaimStrategy(
+    val phaseCache: PhaseCache,
+    private val logger: DiagnosticsLogger
+) {
+    suspend fun executeWithBestStrategy(
+        vendorId: Int,
+        productId: Int,
+        connection: UsbDeviceConnection,
+        audioControlInterface: UsbInterface,
+        action: suspend (UsbDeviceConnection) -> Boolean
+    ): StrategyResult {
+        logger.log("CLAIM", "Executing strategy for $vendorId:$productId. Interface ID: ${audioControlInterface.id}")
+        
+        // Try cached phase first
+        val cachedPhase = phaseCache.getCachedPhase(vendorId, productId)
+        if (cachedPhase != null) {
+            logger.log("CLAIM", "Found cached phase: $cachedPhase. Attempting it first...")
+            val result = executePhase(cachedPhase, connection, audioControlInterface, action)
+            if (result) {
+                logger.log("CLAIM", "Cached phase $cachedPhase succeeded. Execution complete.")
+                return StrategyResult(true, cachedPhase, null)
+            }
+            logger.log("CLAIM", "Cached phase $cachedPhase failed, falling back to full strategy...")
+        } else {
+            logger.log("CLAIM", "No cached phase found for $vendorId:$productId. Trying all phases...")
+        }
+
+        // Try all phases in order
+        for (phase in ClaimPhase.values()) {
+            logger.log("CLAIM", "Evaluating Phase: $phase")
+            if (phase == cachedPhase) {
+                logger.log("CLAIM", "Skipping Phase $phase (already tried via cache)")
+                continue // Already tried
+            }
+            
+            val result = executePhase(phase, connection, audioControlInterface, action)
+            if (result) {
+                logger.log("CLAIM", "Phase $phase succeeded! Caching it for future use.")
+                phaseCache.cachePhase(vendorId, productId, phase)
+                return StrategyResult(true, phase, null)
+            } else {
+                logger.log("CLAIM", "Phase $phase failed.")
+            }
+        }
+
+        logger.log("CLAIM", "CRITICAL: All claim phases exhausted and failed.")
+        return StrategyResult(false, null, "All claim phases failed")
+    }
+
+    private suspend fun executePhase(
+        phase: ClaimPhase,
+        connection: UsbDeviceConnection,
+        usbInterface: UsbInterface,
+        action: suspend (UsbDeviceConnection) -> Boolean
+    ): Boolean {
+        return try {
+            when (phase) {
+                ClaimPhase.PHASE_1_NO_CLAIM -> {
+                    logger.log("CLAIM", "[Phase 1] Executing action WITHOUT claiming interface ${usbInterface.id}")
+                    val result = action(connection)
+                    logger.log("CLAIM", "[Phase 1] Action returned: $result")
+                    result
+                }
+                ClaimPhase.PHASE_2_CLAIM_CONTROL -> {
+                    logger.log("CLAIM", "[Phase 2] Attempting claimInterface(force=false) on interface ${usbInterface.id}")
+                    val claimed = connection.claimInterface(usbInterface, false)
+                    logger.log("CLAIM", "[Phase 2] claimInterface(force=false) result: $claimed")
+                    if (claimed) {
+                        logger.log("CLAIM", "[Phase 2] Executing action holding claim")
+                        val result = action(connection)
+                        logger.log("CLAIM", "[Phase 2] Action finished, result: $result. Releasing interface ${usbInterface.id}")
+                        connection.releaseInterface(usbInterface)
+                        logger.log("CLAIM", "[Phase 2] Interface released")
+                        result
+                    } else {
+                        logger.log("CLAIM", "[Phase 2] Failed to claim interface, skipping action")
+                        false
+                    }
+                }
+                ClaimPhase.PHASE_3_FORCE_CLAIM -> {
+                    logger.log("CLAIM", "[Phase 3] Attempting claimInterface(force=true) on interface ${usbInterface.id}")
+                    val claimed = connection.claimInterface(usbInterface, true)
+                    logger.log("CLAIM", "[Phase 3] claimInterface(force=true) result: $claimed")
+                    if (claimed) {
+                        logger.log("CLAIM", "[Phase 3] Executing action holding force claim")
+                        val result = action(connection)
+                        logger.log("CLAIM", "[Phase 3] Action finished, result: $result. Releasing interface ${usbInterface.id}")
+                        connection.releaseInterface(usbInterface)
+                        logger.log("CLAIM", "[Phase 3] Interface released")
+                        result
+                    } else {
+                        logger.log("CLAIM", "[Phase 3] Failed to force claim interface, skipping action")
+                        false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.log("CLAIM", "Exception during phase $phase: ${e.message}", com.dactuner.util.LogLevel.ERROR)
+            false
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/UacControlTransferExecutor.kt">
+package com.dactuner.usb
+
+import android.hardware.usb.UsbDeviceConnection
+import com.dactuner.util.DiagnosticsLogger
+
+class UacControlTransferExecutor(
+    private val logger: DiagnosticsLogger
+) {
+    companion object {
+        private const val TIMEOUT_MS = 1000
+        
+        // USB standard requests
+        private const val REQ_DIR_OUT = 0x00
+        private const val REQ_DIR_IN = 0x80
+        private const val REQ_TYPE_CLASS = 0x20
+        private const val REQ_REC_INTERFACE = 0x01
+        
+        // Request types
+        private const val REQ_TYPE_SET = REQ_DIR_OUT or REQ_TYPE_CLASS or REQ_REC_INTERFACE // 0x21
+        private const val REQ_TYPE_GET = REQ_DIR_IN or REQ_TYPE_CLASS or REQ_REC_INTERFACE  // 0xA1
+
+        // UAC Control selectors
+        private const val CS_VOLUME = 0x02
+
+        // UAC Request codes
+        private const val REQ_SET_CUR = 0x01
+        private const val REQ_GET_CUR = 0x81
+        private const val REQ_GET_MIN = 0x82
+        private const val REQ_GET_MAX = 0x83
+        private const val REQ_GET_RES = 0x84
+    }
+
+    fun setVolume(
+        connection: UsbDeviceConnection,
+        featureUnitId: Int,
+        interfaceNumber: Int,
+        channel: Int,
+        volume: Int
+    ): Boolean {
+        val data = ByteArray(2)
+        data[0] = (volume and 0xFF).toByte()         // Low byte
+        data[1] = ((volume shr 8) and 0xFF).toByte() // High byte
+        
+        val wValue = (CS_VOLUME shl 8) or channel
+        val wIndex = (featureUnitId shl 8) or interfaceNumber
+
+        val result = connection.controlTransfer(
+            REQ_TYPE_SET,
+            REQ_SET_CUR,
+            wValue,
+            wIndex,
+            data,
+            data.size,
+            TIMEOUT_MS
+        )
+        
+        logger.logControlTransfer("OUT", "SET_CUR", wValue, wIndex, data, result)
+        return result >= 0
+    }
+
+    fun getVolume(
+        connection: UsbDeviceConnection,
+        featureUnitId: Int,
+        interfaceNumber: Int,
+        channel: Int
+    ): Int? {
+        val data = ByteArray(2)
+        val wValue = (CS_VOLUME shl 8) or channel
+        val wIndex = (featureUnitId shl 8) or interfaceNumber
+
+        var result = connection.controlTransfer(
+            REQ_TYPE_GET,
+            REQ_GET_CUR,
+            wValue,
+            wIndex,
+            data,
+            data.size,
+            TIMEOUT_MS
+        )
+        
+        logger.logControlTransfer("IN", "GET_CUR_V1", wValue, wIndex, data, result)
+        
+        if (result < 0) {
+            // Try UAC 2.0 CUR request code (0x01) instead of 0x81
+            result = connection.controlTransfer(
+                REQ_TYPE_GET,
+                REQ_SET_CUR, // 0x01 is the CUR request code for both SET and GET in UAC 2.0
+                wValue,
+                wIndex,
+                data,
+                data.size,
+                TIMEOUT_MS
+            )
+            logger.logControlTransfer("IN", "GET_CUR_V2", wValue, wIndex, data, result)
+        }
+        
+        if (result >= 2) {
+            val volume = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
+            return if (volume > 32767) volume - 65536 else volume // Sign extension
+        }
+        return null
+    }
+
+    fun getVolumeRange(
+        connection: UsbDeviceConnection,
+        featureUnitId: Int,
+        interfaceNumber: Int,
+        channel: Int
+    ): VolumeRange? {
+        val min = executeGetRequest(connection, REQ_GET_MIN, featureUnitId, interfaceNumber, channel) ?: return null
+        val max = executeGetRequest(connection, REQ_GET_MAX, featureUnitId, interfaceNumber, channel) ?: return null
+        val res = executeGetRequest(connection, REQ_GET_RES, featureUnitId, interfaceNumber, channel) ?: 1
+        
+        return VolumeRange(min, max, res)
+    }
+    
+    private fun executeGetRequest(
+        connection: UsbDeviceConnection,
+        request: Int,
+        featureUnitId: Int,
+        interfaceNumber: Int,
+        channel: Int
+    ): Int? {
+        val data = ByteArray(2)
+        val wValue = (CS_VOLUME shl 8) or channel
+        val wIndex = (featureUnitId shl 8) or interfaceNumber
+
+        val result = connection.controlTransfer(
+            REQ_TYPE_GET,
+            request,
+            wValue,
+            wIndex,
+            data,
+            data.size,
+            TIMEOUT_MS
+        )
+        
+        val reqName = when(request) {
+            REQ_GET_MIN -> "GET_MIN"
+            REQ_GET_MAX -> "GET_MAX"
+            REQ_GET_RES -> "GET_RES"
+            else -> "GET_UNKNOWN"
+        }
+        logger.logControlTransfer("IN", reqName, wValue, wIndex, data, result)
+        
+        if (result >= 2) {
+            val volume = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
+            return if (volume > 32767) volume - 65536 else volume // Sign extension
+        }
+        return null
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/UacDescriptorParser.kt">
+package com.dactuner.usb
+
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
+import com.dactuner.util.DiagnosticsLogger
+
+class UacDescriptorParser(
+    private val logger: DiagnosticsLogger
+) {
+    fun parse(device: UsbDevice, connection: UsbDeviceConnection): UacDescriptors {
+        val rawDescriptors = connection.rawDescriptors ?: return createEmptyDescriptors()
+        return parseBytes(rawDescriptors)
+    }
+
+    // Exposed for testing
+    internal fun parseBytes(rawDescriptors: ByteArray): UacDescriptors {
+        var uacVersion = UacVersion.UAC_1_0
+        var audioControlInterfaceNumber = -1
+        val featureUnits = mutableListOf<FeatureUnitDescriptor>()
+        val inputTerminals = mutableListOf<InputTerminalDescriptor>()
+        val outputTerminals = mutableListOf<OutputTerminalDescriptor>()
+        val streamingInterfaces = mutableListOf<Int>()
+
+        var offset = 0
+        var currentAudioControlInterface = -1
+
+        while (offset < rawDescriptors.size - 1) {
+            val bLength = rawDescriptors[offset].toInt() and 0xFF
+            if (bLength == 0 || offset + bLength > rawDescriptors.size) {
+                break // Prevent infinite loop or out of bounds
+            }
+            
+            val bDescriptorType = rawDescriptors[offset + 1].toInt() and 0xFF
+
+            when (bDescriptorType) {
+                0x04 -> { // INTERFACE descriptor
+                    if (bLength >= 9) {
+                        val bInterfaceNumber = rawDescriptors[offset + 2].toInt() and 0xFF
+                        val bInterfaceClass = rawDescriptors[offset + 5].toInt() and 0xFF
+                        val bInterfaceSubClass = rawDescriptors[offset + 6].toInt() and 0xFF
+
+                        if (bInterfaceClass == 0x01) { // Audio
+                            if (bInterfaceSubClass == 0x01) { // AudioControl
+                                currentAudioControlInterface = bInterfaceNumber
+                                audioControlInterfaceNumber = bInterfaceNumber
+                            } else if (bInterfaceSubClass == 0x02) { // AudioStreaming
+                                streamingInterfaces.add(bInterfaceNumber)
+                                currentAudioControlInterface = -1
+                            }
+                        } else {
+                            currentAudioControlInterface = -1
+                        }
+                    }
+                }
+                0x24 -> { // CS_INTERFACE (Class-Specific)
+                    if (currentAudioControlInterface >= 0 && bLength >= 3) {
+                        val bDescriptorSubtype = rawDescriptors[offset + 2].toInt() and 0xFF
+                        when (bDescriptorSubtype) {
+                            0x01 -> { // HEADER
+                                if (bLength >= 6) {
+                                    val bcdADC = (rawDescriptors[offset + 3].toInt() and 0xFF) or 
+                                                 ((rawDescriptors[offset + 4].toInt() and 0xFF) shl 8)
+                                    uacVersion = if (bcdADC >= 0x0200) UacVersion.UAC_2_0 else UacVersion.UAC_1_0
+                                }
+                            }
+                            0x02 -> { // INPUT_TERMINAL
+                                if (bLength >= 6) {
+                                    val bTerminalID = rawDescriptors[offset + 3].toInt() and 0xFF
+                                    val wTerminalType = (rawDescriptors[offset + 4].toInt() and 0xFF) or 
+                                                        ((rawDescriptors[offset + 5].toInt() and 0xFF) shl 8)
+                                    inputTerminals.add(InputTerminalDescriptor(bTerminalID, wTerminalType))
+                                }
+                            }
+                            0x03 -> { // OUTPUT_TERMINAL
+                                if (bLength >= 8) {
+                                    val bTerminalID = rawDescriptors[offset + 3].toInt() and 0xFF
+                                    val wTerminalType = (rawDescriptors[offset + 4].toInt() and 0xFF) or 
+                                                        ((rawDescriptors[offset + 5].toInt() and 0xFF) shl 8)
+                                    val bSourceID = rawDescriptors[offset + 7].toInt() and 0xFF
+                                    outputTerminals.add(OutputTerminalDescriptor(bTerminalID, wTerminalType, bSourceID))
+                                }
+                            }
+                            0x06 -> { // FEATURE_UNIT
+                                featureUnits.add(parseFeatureUnit(rawDescriptors, offset, bLength, uacVersion))
+                            }
+                        }
+                    }
+                }
+            }
+            offset += bLength
+        }
+
+        return UacDescriptors(
+            uacVersion = uacVersion,
+            audioControlInterfaceNumber = audioControlInterfaceNumber,
+            featureUnits = featureUnits,
+            inputTerminals = inputTerminals,
+            outputTerminals = outputTerminals,
+            streamingInterfaces = streamingInterfaces
+        )
+    }
+
+    private fun parseFeatureUnit(data: ByteArray, offset: Int, length: Int, version: UacVersion): FeatureUnitDescriptor {
+        // Bounds checking
+        if (offset + 4 >= data.size) {
+            return FeatureUnitDescriptor(0, 0, 0, emptySet())
+        }
+
+        val unitId = data[offset + 3].toInt() and 0xFF
+        val sourceId = data[offset + 4].toInt() and 0xFF
+        val controls = mutableSetOf<FeatureControl>()
+        var channelCount = 0
+
+        if (version == UacVersion.UAC_1_0) {
+            if (length >= 7 && offset + 6 < data.size) {
+                val bControlSize = data[offset + 5].toInt() and 0xFF
+                if (bControlSize > 0) {
+                    val totalElements = (length - 7) / bControlSize
+                    channelCount = if (totalElements > 0) totalElements - 1 else 0
+                    
+                    for (i in 0 until totalElements) {
+                        val elemOffset = offset + 6 + (i * bControlSize)
+                        if (elemOffset < data.size) {
+                            val mask = data[elemOffset].toInt() and 0xFF
+                            if ((mask and 0x01) != 0) controls.add(FeatureControl.MUTE)
+                            if ((mask and 0x02) != 0) controls.add(FeatureControl.VOLUME)
+                            if ((mask and 0x04) != 0) controls.add(FeatureControl.BASS)
+                            if ((mask and 0x08) != 0) controls.add(FeatureControl.MID)
+                            if ((mask and 0x10) != 0) controls.add(FeatureControl.TREBLE)
+                        }
+                    }
+                }
+            }
+        } else {
+            // UAC 2.0 Feature Unit
+            if (length >= 9 && offset + 8 < data.size) { // Length should be at least 6 + 4 = 10 for master only
+                val totalElements = (length - 6) / 4
+                channelCount = if (totalElements > 0) totalElements - 1 else 0
+                
+                for (i in 0 until totalElements) {
+                    val elemOffset = offset + 5 + (i * 4)
+                    if (elemOffset + 3 < data.size) {
+                        val mask = (data[elemOffset].toInt() and 0xFF) or 
+                                   ((data[elemOffset + 1].toInt() and 0xFF) shl 8) or
+                                   ((data[elemOffset + 2].toInt() and 0xFF) shl 16) or
+                                   ((data[elemOffset + 3].toInt() and 0xFF) shl 24)
+                        if ((mask and 0x03) != 0) controls.add(FeatureControl.MUTE)
+                        if ((mask and 0x0C) != 0) controls.add(FeatureControl.VOLUME)
+                        if ((mask and 0x30) != 0) controls.add(FeatureControl.BASS)
+                    }
+                }
+            }
+        }
+
+        return FeatureUnitDescriptor(
+            unitId = unitId,
+            sourceId = sourceId,
+            channelCount = channelCount,
+            controls = controls
+        )
+    }
+
+    private fun createEmptyDescriptors() = UacDescriptors(
+        uacVersion = UacVersion.UAC_1_0,
+        audioControlInterfaceNumber = -1,
+        featureUnits = emptyList(),
+        inputTerminals = emptyList(),
+        outputTerminals = emptyList(),
+        streamingInterfaces = emptyList()
+    )
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/UacDescriptors.kt">
+package com.dactuner.usb
+
+enum class UacVersion {
+    UAC_1_0,
+    UAC_2_0
+}
+
+enum class FeatureControl {
+    MUTE,
+    VOLUME,
+    BASS,
+    MID,
+    TREBLE,
+    GRAPHIC_EQUALIZER,
+    AUTOMATIC_GAIN,
+    DELAY,
+    BASS_BOOST,
+    LOUDNESS,
+    INPUT_GAIN,
+    INPUT_GAIN_PAD,
+    PHASE_INVERTER,
+    UNDERFLOW_OVERFLOW,
+    LATENCY_CONTROL
+}
+
+data class FeatureUnitDescriptor(
+    val unitId: Int,
+    val sourceId: Int,
+    val channelCount: Int,
+    val controls: Set<FeatureControl>
+)
+
+data class InputTerminalDescriptor(
+    val terminalId: Int,
+    val terminalType: Int
+)
+
+data class OutputTerminalDescriptor(
+    val terminalId: Int,
+    val terminalType: Int,
+    val sourceId: Int
+)
+
+data class UacDescriptors(
+    val uacVersion: UacVersion,
+    val audioControlInterfaceNumber: Int,
+    val featureUnits: List<FeatureUnitDescriptor>,
+    val inputTerminals: List<InputTerminalDescriptor>,
+    val outputTerminals: List<OutputTerminalDescriptor>,
+    val streamingInterfaces: List<Int>
+)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/UsbConnectionHandle.kt">
+package com.dactuner.usb
+
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
+import java.io.Closeable
+
+/**
+ * Closeable wrapper around a USB device connection.
+ *
+ * Ensures the [UsbDeviceConnection] is properly closed when the handle goes out of scope.
+ * Callers should always use the `use { }` pattern to guarantee resource cleanup:
+ *
+ * ```kotlin
+ * usbDeviceManager.openConnection(device)?.use { handle ->
+ *     // Use handle.connection for control transfers
+ * }
+ * ```
+ *
+ * @property device The USB device this connection is opened for
+ * @property connection The active USB device connection for sending control transfers
+ * @property descriptors The parsed UAC descriptors for this device
+ */
+class UsbConnectionHandle(
+    val device: UsbDevice,
+    val connection: UsbDeviceConnection,
+    val descriptors: UacDescriptors
+) : Closeable {
+
+    /**
+     * Closes the USB device connection.
+     *
+     * Safe to call multiple times — subsequent calls are no-ops.
+     * Catches and ignores exceptions from close() since the device
+     * may already be disconnected.
+     */
+    override fun close() {
+        try {
+            connection.close()
+        } catch (_: Exception) {
+            // Ignore close errors — device may already be disconnected
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/UsbDeviceManager.kt">
+package com.dactuner.usb
+
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import com.dactuner.util.DiagnosticsLogger
+import com.dactuner.util.LogLevel
+
+/**
+ * Manages USB device connections for DAC configuration.
+ *
+ * Provides permission checking, permission requesting, and device connection
+ * opening/closing. Only this class and [com.dactuner.usb.UacControlTransferExecutor]
+ * (Phase 2) may directly call Android USB APIs.
+ *
+ * @property context Application context for accessing UsbManager
+ * @property logger Diagnostics logger for recording USB operations
+ */
+class UsbDeviceManager(
+    private val context: Context,
+    private val logger: DiagnosticsLogger
+) {
+
+    private val usbManager: UsbManager =
+        context.getSystemService(Context.USB_SERVICE) as UsbManager
+        
+    private val descriptorParser = UacDescriptorParser(logger)
+
+    /**
+     * Checks whether the app has permission to access the given USB device.
+     *
+     * @param device The USB device to check permission for
+     * @return true if permission has been granted
+     */
+    fun hasPermission(device: UsbDevice): Boolean {
+        return usbManager.hasPermission(device)
+    }
+
+    /**
+     * Requests permission to access the given USB device.
+     *
+     * Shows the system USB permission dialog to the user. The result is
+     * delivered asynchronously via the provided callback.
+     *
+     * @param device The USB device to request permission for
+     * @param callback Called with true if permission was granted, false otherwise
+     */
+    fun requestPermission(device: UsbDevice, callback: (Boolean) -> Unit) {
+        val permissionIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(ACTION_USB_PERMISSION),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (intent.action == ACTION_USB_PERMISSION) {
+                    val granted = intent.getBooleanExtra(
+                        UsbManager.EXTRA_PERMISSION_GRANTED, false
+                    )
+                    logger.log(
+                        "USB_PERMISSION",
+                        "Permission ${if (granted) "granted" else "denied"} for device"
+                    )
+                    callback(granted)
+                    try {
+                        context.unregisterReceiver(this)
+                    } catch (_: IllegalArgumentException) {
+                        // Receiver may already be unregistered
+                    }
+                }
+            }
+        }
+
+        context.registerReceiver(
+            receiver,
+            IntentFilter(ACTION_USB_PERMISSION),
+            Context.RECEIVER_NOT_EXPORTED
+        )
+
+        logger.log("USB_PERMISSION", "Requesting USB permission for device")
+        usbManager.requestPermission(device, permissionIntent)
+    }
+
+    /**
+     * Opens a connection to the USB device and parses its UAC descriptors.
+     *
+     * Returns a [UsbConnectionHandle] that must be closed after use (preferably
+     * via the `use { }` pattern). Returns null if the connection cannot be opened.
+     *
+     * @param device The USB device to connect to
+     * @return A [UsbConnectionHandle] or null if the connection failed
+     */
+    fun openConnection(device: UsbDevice): UsbConnectionHandle? {
+        val startTime = System.currentTimeMillis()
+        return try {
+            val connection = usbManager.openDevice(device)
+            if (connection != null) {
+                val descriptors = descriptorParser.parse(device, connection)
+                val handle = UsbConnectionHandle(device, connection, descriptors)
+                
+                val duration = System.currentTimeMillis() - startTime
+                logger.logUsbOperation("openDevice + parse", "success", duration)
+                handle
+            } else {
+                val duration = System.currentTimeMillis() - startTime
+                logger.logUsbOperation(
+                    "openDevice",
+                    "failed (null connection — check permissions)",
+                    duration
+                )
+                null
+            }
+        } catch (e: Exception) {
+            val duration = System.currentTimeMillis() - startTime
+            logger.logUsbOperation("openDevice", "exception: ${e.message}", duration)
+            logger.log("USB", "Failed to open device: ${e.message}", LogLevel.ERROR)
+            null
+        }
+    }
+
+    /**
+     * Returns a map of currently connected USB devices.
+     * Key is the device name (path), value is the UsbDevice.
+     */
+    fun getConnectedDevices(): Map<String, UsbDevice> {
+        return usbManager.deviceList
+    }
+
+    companion object {
+        /** Action for USB permission PendingIntent. */
+        private const val ACTION_USB_PERMISSION = "com.dactuner.USB_PERMISSION"
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/usb/VolumeRange.kt">
+package com.dactuner.usb
+
+/**
+ * Represents the volume range of a USB Audio Class device.
+ * Values are 16-bit signed integers in 1/256 dB units.
+ */
+data class VolumeRange(
+    val min: Int,
+    val max: Int,
+    val resolution: Int
+)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/util/DiagnosticsLogger.kt">
+package com.dactuner.util
+
+import android.util.Log
+
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * In-memory diagnostics logger with ring buffer storage.
+ *
+ * Stores log entries for display in the debug UI and export for bug reports.
+ * Thread-safe for concurrent access from USB and UI threads.
+ * Does not depend on android.util.Log to remain unit-testable.
+ */
+class DiagnosticsLogger {
+
+    private val _entries = ArrayDeque<LogEntry>()
+    private val lock = Any()
+
+    /**
+     * Log a general message.
+     */
+    fun log(tag: String, message: String, level: LogLevel = LogLevel.INFO) {
+        when (level) {
+            LogLevel.DEBUG -> Log.d("DACTuner_$tag", message)
+            LogLevel.INFO -> Log.i("DACTuner_$tag", message)
+            LogLevel.WARNING -> Log.w("DACTuner_$tag", message)
+            LogLevel.ERROR -> Log.e("DACTuner_$tag", message)
+        }
+        addEntry(LogEntry(System.currentTimeMillis(), tag, message, level))
+    }
+
+    /**
+     * Log a USB operation with timing information.
+     */
+    fun logUsbOperation(operation: String, result: String, durationMs: Long) {
+        log("USB", "$operation → $result (${durationMs}ms)", LogLevel.INFO)
+    }
+
+    /**
+     * Log a USB control transfer with full parameter details.
+     *
+     * @param direction Transfer direction (e.g., "OUT" for host-to-device, "IN" for device-to-host)
+     * @param request Request name (e.g., "SET_CUR", "GET_CUR")
+     * @param value wValue field of the control transfer
+     * @param index wIndex field of the control transfer
+     * @param data Raw data bytes sent or received
+     * @param result Return value from controlTransfer() — bytes transferred or negative error code
+     */
+    fun logControlTransfer(
+        direction: String,
+        request: String,
+        value: Int,
+        index: Int,
+        data: ByteArray,
+        result: Int
+    ) {
+        val dataHex = data.joinToString(" ") { String.format("%02X", it) }
+        val message = "$direction $request wValue=0x${String.format("%04X", value)} " +
+                "wIndex=0x${String.format("%04X", index)} data=[$dataHex] result=$result"
+        log(
+            "CTRL_TRANSFER",
+            message,
+            if (result >= 0) LogLevel.INFO else LogLevel.ERROR
+        )
+    }
+
+    /**
+     * Log a raw USB descriptor dump as hex.
+     * Intended for debug mode only — produces verbose output.
+     */
+    fun logDescriptorDump(descriptors: ByteArray) {
+        val hexDump = descriptors.toList()
+            .chunked(16)
+            .mapIndexed { i, bytes ->
+                val offset = String.format("%04X", i * 16)
+                val hex = bytes.joinToString(" ") { String.format("%02X", it) }
+                "$offset: $hex"
+            }
+            .joinToString("\n")
+        log("DESCRIPTOR_DUMP", "\n$hexDump", LogLevel.DEBUG)
+    }
+
+    /**
+     * Returns all log entries in chronological order.
+     */
+    fun getLogEntries(): List<LogEntry> = synchronized(lock) { _entries.toList() }
+
+    /**
+     * Exports all log entries as a plain text string suitable for bug reports.
+     * Format: [timestamp] [LEVEL] TAG: message
+     */
+    fun exportToString(): String {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+        return synchronized(lock) {
+            _entries.joinToString("\n") { entry ->
+                val timestamp = dateFormat.format(Date(entry.timestamp))
+                "[$timestamp] [${entry.level}] ${entry.tag}: ${entry.message}"
+            }
+        }
+    }
+
+    /**
+     * Clears all log entries.
+     */
+    fun clear() {
+        synchronized(lock) { _entries.clear() }
+    }
+
+    private fun addEntry(entry: LogEntry) {
+        synchronized(lock) {
+            _entries.addLast(entry)
+            while (_entries.size > MAX_ENTRIES) {
+                _entries.removeFirst()
+            }
+        }
+    }
+
+    companion object {
+        /** Maximum number of log entries stored in the ring buffer. */
+        const val MAX_ENTRIES = 500
+    }
+}
+
+/** Severity level for log entries. */
+enum class LogLevel {
+    DEBUG,
+    INFO,
+    WARNING,
+    ERROR
+}
+
+/** A single log entry with timestamp, tag, message, and severity level. */
+data class LogEntry(
+    val timestamp: Long,
+    val tag: String,
+    val message: String,
+    val level: LogLevel
+)
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/util/NotificationHelper.kt">
+package com.dactuner.util
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+
+/**
+ * Manages transient notifications for DAC configuration events.
+ *
+ * Creates a dedicated notification channel ("DAC Configuration") and provides
+ * methods to show/dismiss configuration success and failure notifications.
+ * Notifications auto-dismiss after 3 seconds.
+ *
+ * Phase 1: Stub implementation — channel creation only.
+ * Full notification display implemented in Phase 5.
+ */
+class NotificationHelper(private val context: Context) {
+
+    /**
+     * Creates the notification channel for DAC configuration events.
+     * Must be called during application initialization (before any notifications are shown).
+     * Safe to call multiple times — Android ignores duplicate channel creation.
+     */
+    fun initialize() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = CHANNEL_DESCRIPTION
+                setShowBadge(false)
+            }
+            val notificationManager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    /**
+     * Shows a transient success notification.
+     * Auto-dismisses after 3 seconds.
+     *
+     * @param deviceName The name of the configured DAC device
+     */
+    fun showConfigSuccess(deviceName: String) {
+        // TODO: Phase 5 — implement notification display
+    }
+
+    /**
+     * Shows a failure notification with error details.
+     *
+     * @param errorMessage Human-readable error description
+     */
+    fun showConfigFailure(errorMessage: String) {
+        // TODO: Phase 5 — implement notification display
+    }
+
+    /**
+     * Dismisses any active configuration notification.
+     */
+    fun dismiss() {
+        // TODO: Phase 5 — implement notification dismissal
+    }
+
+    companion object {
+        /** Notification channel ID for DAC configuration events. */
+        const val CHANNEL_ID = "dac_configuration"
+
+        /** User-visible notification channel name. */
+        const val CHANNEL_NAME = "DAC Configuration"
+
+        /** User-visible notification channel description. */
+        const val CHANNEL_DESCRIPTION = "Notifications for DAC configuration events"
+
+        /** Notification auto-dismiss timeout in milliseconds. */
+        const val NOTIFICATION_TIMEOUT_MS = 3000L
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/util/PreferencesManager.kt">
+package com.dactuner.util
+
+import android.content.Context
+import android.content.SharedPreferences
+
+/**
+ * Lightweight SharedPreferences wrapper for app settings and cached data.
+ *
+ * Uses SharedPreferences for v1 simplicity. Stores app settings (auto-configure,
+ * notifications, debug mode), timestamps, and phase cache data.
+ */
+class PreferencesManager(context: Context) {
+
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    init {
+        if (prefs.getInt(KEY_PHASE_CACHE_VERSION, 1) < PHASE_CACHE_VERSION) {
+            clearPhaseCache()
+            prefs.edit().putInt(KEY_PHASE_CACHE_VERSION, PHASE_CACHE_VERSION).apply()
+        }
+    }
+
+    /** Whether to automatically configure the DAC on USB connection. Default: true. */
+    var autoConfigureEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_CONFIGURE, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_CONFIGURE, value).apply()
+
+    /** Whether to show transient notifications on configuration events. Default: true. */
+    var showNotifications: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_NOTIFICATIONS, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_NOTIFICATIONS, value).apply()
+
+    /** Whether debug mode (verbose logging, descriptor dumps) is enabled. Default: false. */
+    var debugModeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DEBUG_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_DEBUG_MODE, value).apply()
+
+    /** Timestamp of the last successful DAC configuration, in epoch millis. */
+    var lastConfiguredTimestamp: Long
+        get() = prefs.getLong(KEY_LAST_CONFIGURED, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_CONFIGURED, value).apply()
+
+    /**
+     * Retrieves the cached claim phase for a device identified by VID/PID.
+     * Returns null if no phase has been cached.
+     */
+    fun getCachedPhase(vendorId: Int, productId: Int): Int? {
+        val key = "${KEY_PHASE_CACHE_PREFIX}${vendorId}_${productId}"
+        val value = prefs.getInt(key, -1)
+        return if (value >= 0) value else null
+    }
+
+    /**
+     * Caches the successful claim phase ordinal for a device identified by VID/PID.
+     */
+    fun setCachedPhase(vendorId: Int, productId: Int, phaseOrdinal: Int) {
+        val key = "${KEY_PHASE_CACHE_PREFIX}${vendorId}_${productId}"
+        prefs.edit().putInt(key, phaseOrdinal).apply()
+    }
+
+    /**
+     * Clears the phase cache for all devices.
+     */
+    fun clearPhaseCache() {
+        val editor = prefs.edit()
+        prefs.all.keys
+            .filter { it.startsWith(KEY_PHASE_CACHE_PREFIX) }
+            .forEach { editor.remove(it) }
+        editor.apply()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "dactuner_prefs"
+        private const val KEY_AUTO_CONFIGURE = "auto_configure_enabled"
+        private const val KEY_SHOW_NOTIFICATIONS = "show_notifications"
+        private const val KEY_DEBUG_MODE = "debug_mode_enabled"
+        private const val KEY_LAST_CONFIGURED = "last_configured_timestamp"
+        private const val KEY_PHASE_CACHE_PREFIX = "phase_cache_"
+        private const val PHASE_CACHE_VERSION = 2
+        private const val KEY_PHASE_CACHE_VERSION = "phase_cache_version"
+    }
+}
+</file>
+
+<file path="app/src/main/kotlin/com/dactuner/DacTunerApplication.kt">
+package com.dactuner
+
+import android.app.Application
+import com.dactuner.core.DacIdentifier
+import com.dactuner.core.DeviceProfileRegistry
+import com.dactuner.usb.UsbDeviceManager
+import com.dactuner.util.DiagnosticsLogger
+import com.dactuner.util.NotificationHelper
+import com.dactuner.util.PreferencesManager
+
+/**
+ * Application class for DACTuner.
+ *
+ * Initializes and provides access to application-scoped singleton components.
+ * Uses manual dependency injection for v1 simplicity — all components are
+ * created here and accessed via [instance].
+ *
+ * No DI framework (Hilt/Dagger) is used to minimize the dependency footprint.
+ */
+class DacTunerApplication : Application() {
+
+    /** In-memory diagnostics logger. */
+    lateinit var diagnosticsLogger: DiagnosticsLogger
+        private set
+
+    /** SharedPreferences wrapper for app settings. */
+    lateinit var preferencesManager: PreferencesManager
+        private set
+
+    /** Notification manager for configuration events. */
+    lateinit var notificationHelper: NotificationHelper
+        private set
+
+    /** Registry of known DAC device profiles. */
+    lateinit var deviceProfileRegistry: DeviceProfileRegistry
+        private set
+
+    /** Identifies supported DAC devices by VID/PID. */
+    lateinit var dacIdentifier: DacIdentifier
+        private set
+
+    /** Manages USB device connections and permissions. */
+    lateinit var usbDeviceManager: UsbDeviceManager
+        private set
+
+    /** Caches the successful USB claim phase. */
+    lateinit var phaseCache: com.dactuner.reliability.PhaseCache
+        private set
+
+    /** Strategy for claiming USB interfaces. */
+    lateinit var interfaceClaimStrategy: com.dactuner.usb.InterfaceClaimStrategy
+        private set
+
+    /** Executes UAC control transfers. */
+    lateinit var controlTransferExecutor: com.dactuner.usb.UacControlTransferExecutor
+        private set
+
+    /** Mitigates HAL race conditions when setting volume. */
+    lateinit var halRaceMitigator: com.dactuner.reliability.HalRaceMitigator
+        private set
+
+    /** Orchestrates the DAC configuration process. */
+    lateinit var configurationOrchestrator: com.dactuner.core.ConfigurationOrchestrator
+        private set
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+
+        // Initialize utility layer (no upward dependencies)
+        diagnosticsLogger = DiagnosticsLogger()
+        preferencesManager = PreferencesManager(this)
+        notificationHelper = NotificationHelper(this)
+        notificationHelper.initialize()
+
+        // Initialize core layer
+        deviceProfileRegistry = DeviceProfileRegistry()
+        dacIdentifier = DacIdentifier(deviceProfileRegistry)
+
+        // Initialize reliability layer
+        phaseCache = com.dactuner.reliability.PhaseCache(preferencesManager)
+
+        // Initialize USB layer
+        usbDeviceManager = UsbDeviceManager(this, diagnosticsLogger)
+        interfaceClaimStrategy = com.dactuner.usb.InterfaceClaimStrategy(phaseCache, diagnosticsLogger)
+        controlTransferExecutor = com.dactuner.usb.UacControlTransferExecutor(diagnosticsLogger)
+
+        // Initialize orchestrator
+        halRaceMitigator = com.dactuner.reliability.HalRaceMitigator(controlTransferExecutor, interfaceClaimStrategy, diagnosticsLogger)
+        
+        configurationOrchestrator = com.dactuner.core.ConfigurationOrchestrator(
+            dacIdentifier,
+            usbDeviceManager,
+            interfaceClaimStrategy,
+            controlTransferExecutor,
+            halRaceMitigator,
+            diagnosticsLogger
+        )
+
+        diagnosticsLogger.log("APP", "DACTuner application initialized")
+    }
+
+    companion object {
+        /**
+         * Singleton application instance.
+         * Available after [onCreate] has been called.
+         */
+        lateinit var instance: DacTunerApplication
+            private set
+    }
+}
+</file>
+
+</files>
