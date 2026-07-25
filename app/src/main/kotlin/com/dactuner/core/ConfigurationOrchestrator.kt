@@ -123,4 +123,61 @@ class ConfigurationOrchestrator(
             }
         }
     }
+
+    suspend fun checkIsVolumeMaximized(device: UsbDevice): Boolean = withContext(Dispatchers.IO) {
+        val profile = dacIdentifier.identify(device.vendorId, device.productId) ?: return@withContext false
+
+        if (!usbDeviceManager.hasPermission(device)) {
+            return@withContext false
+        }
+
+        val handle = usbDeviceManager.openConnection(device) ?: return@withContext false
+
+        handle.use { usbHandle ->
+            val descriptors = usbHandle.descriptors
+            if (descriptors.audioControlInterfaceNumber < 0) {
+                return@withContext false
+            }
+
+            val volumeFeatureUnit = descriptors.featureUnits.find { fu ->
+                fu.controls.contains(FeatureControl.VOLUME)
+            } ?: return@withContext false
+
+            val audioControlInterface = usbHandle.device.getInterface(descriptors.audioControlInterfaceNumber)
+            
+            var isMaximized = false
+            
+            val queryChannel = 1
+            claimStrategy.executeWithBestStrategy(
+                vendorId = device.vendorId,
+                productId = device.productId,
+                connection = usbHandle.connection,
+                audioControlInterface = audioControlInterface
+            ) { connection ->
+                val maxVol = profile.knownMaxVolume ?: controlTransferExecutor.getVolumeRange(
+                    connection = connection,
+                    featureUnitId = volumeFeatureUnit.unitId,
+                    interfaceNumber = descriptors.audioControlInterfaceNumber,
+                    channel = queryChannel
+                )?.max ?: 0
+
+                val currentVol = controlTransferExecutor.getVolume(
+                    connection = connection,
+                    featureUnitId = volumeFeatureUnit.unitId,
+                    interfaceNumber = descriptors.audioControlInterfaceNumber,
+                    channel = queryChannel
+                ) ?: controlTransferExecutor.getVolume(
+                    connection = connection,
+                    featureUnitId = volumeFeatureUnit.unitId,
+                    interfaceNumber = descriptors.audioControlInterfaceNumber,
+                    channel = 0
+                ) ?: -9999
+
+                isMaximized = currentVol >= maxVol
+                true
+            }
+
+            return@withContext isMaximized
+        }
+    }
 }

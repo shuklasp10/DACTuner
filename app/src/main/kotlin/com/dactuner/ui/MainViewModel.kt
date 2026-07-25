@@ -76,6 +76,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (isExpectedReset) {
                 expectedResetVidPid = null
                 expectedResetUntil = 0L
+            } else {
+                // Check if already configured/maximized
+                viewModelScope.launch {
+                    val connectedDevices = app.usbDeviceManager.getConnectedDevices()
+                    val device = connectedDevices.values.find {
+                        it.vendorId == vendorId && it.productId == productId
+                    }
+                    if (device != null) {
+                        val isMaximized = app.configurationOrchestrator.checkIsVolumeMaximized(device)
+                        if (isMaximized) {
+                            logger.log("VIEWMODEL", "DAC is already at maximum volume. Marking as CONFIGURED.")
+                            _uiState.update { state ->
+                                state.copy(
+                                    connectionStatus = ConnectionStatus.CONFIGURED,
+                                    configurationStatus = ConfigurationStatus.SUCCESS,
+                                    lastConfiguredTimestamp = System.currentTimeMillis()
+                                )
+                            }
+                        }
+                    }
+                }
             }
         } else {
             logger.log(
