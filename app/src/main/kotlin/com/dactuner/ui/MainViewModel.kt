@@ -147,6 +147,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(configurationStatus = ConfigurationStatus.CONFIGURING) }
             
+            try {
+                val audioManager = app.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                val maxVolume = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, maxVolume / 2, 0)
+                logger.log("VIEWMODEL", "Set Android system media volume to 50% to prevent hearing damage.")
+            } catch (e: Exception) {
+                logger.log("VIEWMODEL", "Failed to set system media volume: ${e.message}", LogLevel.WARNING)
+            }
+            
             val connectedDevices = app.usbDeviceManager.getConnectedDevices()
             val device = connectedDevices.values.find { 
                 String.format("%04X:%04X", it.vendorId, it.productId) == state.deviceInfo?.vidPid 
