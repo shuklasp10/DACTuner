@@ -94,6 +94,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     lastConfiguredTimestamp = System.currentTimeMillis()
                                 )
                             }
+                        } else if (_uiState.value.settings.autoConfigureEnabled) {
+                            logger.log("VIEWMODEL", "DAC is not at maximum volume. Auto-configure is enabled, triggering configuration.")
+                            configureConnectedDac()
                         }
                     }
                 }
