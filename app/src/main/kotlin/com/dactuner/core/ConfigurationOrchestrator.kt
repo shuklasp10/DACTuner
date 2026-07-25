@@ -152,7 +152,8 @@ class ConfigurationOrchestrator(
                 vendorId = device.vendorId,
                 productId = device.productId,
                 connection = usbHandle.connection,
-                audioControlInterface = audioControlInterface
+                audioControlInterface = audioControlInterface,
+                allowForceClaim = false
             ) { connection ->
                 val maxVol = profile.knownMaxVolume ?: controlTransferExecutor.getVolumeRange(
                     connection = connection,

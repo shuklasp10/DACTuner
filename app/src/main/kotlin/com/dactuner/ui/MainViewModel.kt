@@ -50,10 +50,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * @param deviceName Optional device name string from Android USB subsystem
      */
     fun onDacConnected(vendorId: Int, productId: Int, deviceName: String?) {
+        val vidPidStr = String.format("%04X:%04X", vendorId, productId)
         val profile = dacIdentifier.identify(vendorId, productId)
         if (profile != null) {
             val isExpectedReset = expectedResetVidPid == (vendorId to productId) &&
                 System.currentTimeMillis() < expectedResetUntil
+
+            if (!isExpectedReset && 
+                _uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED && 
+                _uiState.value.deviceInfo?.vidPid == vidPidStr) {
+                logger.log("VIEWMODEL", "Ignoring duplicate connection event for $vidPidStr")
+                return
+            }
 
             logger.log(
                 "VIEWMODEL",

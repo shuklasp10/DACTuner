@@ -26,6 +26,7 @@ class InterfaceClaimStrategy(
         productId: Int,
         connection: UsbDeviceConnection,
         audioControlInterface: UsbInterface,
+        allowForceClaim: Boolean = true,
         action: suspend (UsbDeviceConnection) -> Boolean
     ): StrategyResult {
         logger.log("CLAIM", "Executing strategy for $vendorId:$productId. Interface ID: ${audioControlInterface.id}")
@@ -33,13 +34,17 @@ class InterfaceClaimStrategy(
         // Try cached phase first
         val cachedPhase = phaseCache.getCachedPhase(vendorId, productId)
         if (cachedPhase != null) {
-            logger.log("CLAIM", "Found cached phase: $cachedPhase. Attempting it first...")
-            val result = executePhase(cachedPhase, connection, audioControlInterface, action)
-            if (result) {
-                logger.log("CLAIM", "Cached phase $cachedPhase succeeded. Execution complete.")
-                return StrategyResult(true, cachedPhase, null)
+            if (cachedPhase == ClaimPhase.PHASE_3_FORCE_CLAIM && !allowForceClaim) {
+                logger.log("CLAIM", "Cached phase is PHASE_3_FORCE_CLAIM but force claim is disabled. Ignoring cache.")
+            } else {
+                logger.log("CLAIM", "Found cached phase: $cachedPhase. Attempting it first...")
+                val result = executePhase(cachedPhase, connection, audioControlInterface, action)
+                if (result) {
+                    logger.log("CLAIM", "Cached phase $cachedPhase succeeded. Execution complete.")
+                    return StrategyResult(true, cachedPhase, null)
+                }
+                logger.log("CLAIM", "Cached phase $cachedPhase failed, falling back to full strategy...")
             }
-            logger.log("CLAIM", "Cached phase $cachedPhase failed, falling back to full strategy...")
         } else {
             logger.log("CLAIM", "No cached phase found for $vendorId:$productId. Trying all phases...")
         }
@@ -47,7 +52,11 @@ class InterfaceClaimStrategy(
         // Try all phases in order
         for (phase in ClaimPhase.values()) {
             logger.log("CLAIM", "Evaluating Phase: $phase")
-            if (phase == cachedPhase) {
+            if (phase == ClaimPhase.PHASE_3_FORCE_CLAIM && !allowForceClaim) {
+                logger.log("CLAIM", "Skipping Phase 3 because force claim is disabled.")
+                continue
+            }
+            if (phase == cachedPhase && (phase != ClaimPhase.PHASE_3_FORCE_CLAIM || allowForceClaim)) {
                 logger.log("CLAIM", "Skipping Phase $phase (already tried via cache)")
                 continue // Already tried
             }
