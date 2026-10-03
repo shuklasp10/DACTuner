@@ -38,11 +38,30 @@ class MainActivity : ComponentActivity() {
         checkConnectedDevices(detachedVendorId = vendorId, detachedProductId = productId)
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        val app = application as DacTunerApplication
+        app.diagnosticsLogger.log(
+            "ACTIVITY",
+            if (isGranted) "Notification permission granted" else "Notification permission denied"
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val app = application as DacTunerApplication
         app.diagnosticsLogger.log("ACTIVITY", "MainActivity created")
+
+        // Request notification permission on Android 13+ if needed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         // Handle USB_DEVICE_ATTACHED intent if launched via USB plug-in
         handleUsbIntent(intent)

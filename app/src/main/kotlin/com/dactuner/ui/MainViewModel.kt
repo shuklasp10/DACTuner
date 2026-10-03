@@ -39,6 +39,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Observable UI state for the Compose UI. */
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    init {
+        val prefs = app.preferencesManager
+        _uiState.update { state ->
+            state.copy(
+                settings = AppSettings(
+                    autoConfigureEnabled = prefs.autoConfigureEnabled,
+                    showNotifications = prefs.showNotifications,
+                    backgroundModeEnabled = prefs.backgroundModeEnabled,
+                    debugModeEnabled = prefs.debugModeEnabled
+                )
+            )
+        }
+    }
+
     /**
      * Called when a supported DAC device is connected.
      *
@@ -217,5 +231,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )}
             }
         }
+    }
+
+    /**
+     * Toggles the auto-configure setting.
+     */
+    fun onAutoConfigureToggled(enabled: Boolean) {
+        app.preferencesManager.autoConfigureEnabled = enabled
+        _uiState.update { it.copy(settings = it.settings.copy(autoConfigureEnabled = enabled)) }
+    }
+
+    /**
+     * Toggles the background configuration mode setting.
+     */
+    fun onBackgroundModeToggled(enabled: Boolean) {
+        app.preferencesManager.backgroundModeEnabled = enabled
+        _uiState.update { it.copy(settings = it.settings.copy(backgroundModeEnabled = enabled)) }
+    }
+
+    /**
+     * Toggles the notification display setting.
+     */
+    fun onShowNotificationsToggled(enabled: Boolean) {
+        app.preferencesManager.showNotifications = enabled
+        _uiState.update { it.copy(settings = it.settings.copy(showNotifications = enabled)) }
     }
 }

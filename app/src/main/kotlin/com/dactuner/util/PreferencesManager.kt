@@ -36,6 +36,11 @@ class PreferencesManager(context: Context) {
         get() = prefs.getBoolean(KEY_DEBUG_MODE, false)
         set(value) = prefs.edit().putBoolean(KEY_DEBUG_MODE, value).apply()
 
+    /** Whether to configure DAC silently in the background on USB connection. Default: true. */
+    var backgroundModeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BACKGROUND_MODE, true)
+        set(value) = prefs.edit().putBoolean(KEY_BACKGROUND_MODE, value).apply()
+
     /** Timestamp of the last successful DAC configuration, in epoch millis. */
     var lastConfiguredTimestamp: Long
         get() = prefs.getLong(KEY_LAST_CONFIGURED, 0L)
@@ -75,6 +80,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_AUTO_CONFIGURE = "auto_configure_enabled"
         private const val KEY_SHOW_NOTIFICATIONS = "show_notifications"
         private const val KEY_DEBUG_MODE = "debug_mode_enabled"
+        private const val KEY_BACKGROUND_MODE = "background_mode_enabled"
         private const val KEY_LAST_CONFIGURED = "last_configured_timestamp"
         private const val KEY_PHASE_CACHE_PREFIX = "phase_cache_"
         private const val PHASE_CACHE_VERSION = 2

@@ -108,6 +108,9 @@ data class AppSettings(
     /** Show transient notifications on configuration events. */
     val showNotifications: Boolean = true,
 
+    /** Whether to configure DAC silently in the background on USB connection. */
+    val backgroundModeEnabled: Boolean = true,
+
     /** Enable verbose debug logging and descriptor dumps. */
     val debugModeEnabled: Boolean = false
 )

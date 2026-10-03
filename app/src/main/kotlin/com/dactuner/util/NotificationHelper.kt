@@ -4,6 +4,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import com.dactuner.DacTunerApplication
+import com.dactuner.R
 
 /**
  * Manages transient notifications for DAC configuration events.
@@ -38,6 +40,9 @@ class NotificationHelper(private val context: Context) {
         }
     }
 
+    private val notificationManager: NotificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
     /**
      * Shows a transient success notification.
      * Auto-dismisses after 3 seconds.
@@ -45,7 +50,40 @@ class NotificationHelper(private val context: Context) {
      * @param deviceName The name of the configured DAC device
      */
     fun showConfigSuccess(deviceName: String) {
-        // TODO: Phase 5 — implement notification display
+        val app = context.applicationContext as? DacTunerApplication
+        val prefs = app?.preferencesManager
+        if (prefs != null && !prefs.showNotifications) {
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+        }
+
+        val contentIntent = android.app.PendingIntent.getActivity(
+            context,
+            0,
+            android.content.Intent(context, com.dactuner.entry.MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = androidx.core.app.NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("DACTuner")
+            .setContentText("\u2713 $deviceName configured to maximum volume")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .setTimeoutAfter(NOTIFICATION_TIMEOUT_MS)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
     /**
@@ -54,14 +92,47 @@ class NotificationHelper(private val context: Context) {
      * @param errorMessage Human-readable error description
      */
     fun showConfigFailure(errorMessage: String) {
-        // TODO: Phase 5 — implement notification display
+        val app = context.applicationContext as? DacTunerApplication
+        val prefs = app?.preferencesManager
+        if (prefs != null && !prefs.showNotifications) {
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+        }
+
+        val contentIntent = android.app.PendingIntent.getActivity(
+            context,
+            0,
+            android.content.Intent(context, com.dactuner.entry.MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = androidx.core.app.NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("DACTuner")
+            .setContentText("Configuration issue: $errorMessage")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .setTimeoutAfter(5000L)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
     /**
      * Dismisses any active configuration notification.
      */
     fun dismiss() {
-        // TODO: Phase 5 — implement notification dismissal
+        notificationManager.cancel(NOTIFICATION_ID)
     }
 
     companion object {
@@ -76,5 +147,8 @@ class NotificationHelper(private val context: Context) {
 
         /** Notification auto-dismiss timeout in milliseconds. */
         const val NOTIFICATION_TIMEOUT_MS = 3000L
+
+        /** Notification ID for configuration status notification. */
+        const val NOTIFICATION_ID = 1001
     }
 }
