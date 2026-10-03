@@ -9,7 +9,9 @@ import com.dactuner.usb.UacControlTransferExecutor
 import com.dactuner.usb.UsbDeviceManager
 import com.dactuner.usb.VolumeRange
 import com.dactuner.util.DiagnosticsLogger
+import com.dactuner.util.LogLevel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 class ConfigurationOrchestrator(
@@ -20,6 +22,83 @@ class ConfigurationOrchestrator(
     private val halRaceMitigator: HalRaceMitigator,
     private val logger: DiagnosticsLogger
 ) {
+    private sealed interface OpenResult {
+        data class Success(val handle: com.dactuner.usb.UsbConnectionHandle) : OpenResult
+        data class Failure(val error: ConfigurationError) : OpenResult
+    }
+
+    /**
+     * Attempts to open the USB DAC and parse its audio descriptors with settling delays.
+     *
+     * DACs such as the Apple USB-C adapter take several hundred milliseconds after physical
+     * USB insertion to power up their internal DAC chip and sense headphone jack impedance.
+     * During this warm-up period, the device only advertises HID interfaces. This method
+     * polls the connection across the given [delaysMs] schedule until the AudioControl
+     * interface becomes available.
+     */
+    private suspend fun openConnectionWithSettling(
+        device: UsbDevice,
+        delaysMs: List<Long>
+    ): OpenResult {
+        val vid = device.vendorId
+        val pid = device.productId
+        var hadOpenedWithoutAudio = false
+
+        for ((index, delayMs) in delaysMs.withIndex()) {
+            if (delayMs > 0) {
+                logger.log(
+                    "CONFIG",
+                    "Waiting ${delayMs}ms for DAC audio descriptors to settle (attempt ${index + 1}/${delaysMs.size})..."
+                )
+                delay(delayMs)
+            }
+
+            val connectedDevices = usbDeviceManager.getConnectedDevices()
+            val currentDevice = connectedDevices.values.find {
+                it.vendorId == vid && it.productId == pid
+            }
+
+            if (currentDevice == null) {
+                logger.log("CONFIG", "DAC device disconnected during settling attempt ${index + 1}", LogLevel.WARNING)
+                return OpenResult.Failure(ConfigurationError.DeviceNotFound)
+            }
+
+            val handle = usbDeviceManager.openConnection(currentDevice)
+            if (handle != null) {
+                if (handle.descriptors.audioControlInterfaceNumber >= 0) {
+                    logger.log(
+                        "CONFIG",
+                        "DAC descriptors settled successfully on attempt ${index + 1} " +
+                            "(AudioControl iface = ${handle.descriptors.audioControlInterfaceNumber})"
+                    )
+                    return OpenResult.Success(handle)
+                } else {
+                    hadOpenedWithoutAudio = true
+                    logger.log(
+                        "CONFIG",
+                        "DAC connection opened on attempt ${index + 1}, but AudioControl interface not ready yet. " +
+                            "Closing and retrying...",
+                        LogLevel.WARNING
+                    )
+                    handle.close()
+                }
+            } else {
+                logger.log(
+                    "CONFIG",
+                    "Failed to open connection on attempt ${index + 1}",
+                    LogLevel.WARNING
+                )
+            }
+        }
+
+        val finalError = if (hadOpenedWithoutAudio) {
+            ConfigurationError.DescriptorParseFailure
+        } else {
+            ConfigurationError.DeviceBusy
+        }
+        return OpenResult.Failure(finalError)
+    }
+
     suspend fun configureIfSupported(device: UsbDevice): ConfigurationResult = withContext(Dispatchers.IO) {
         val profile = dacIdentifier.identify(device.vendorId, device.productId)
         if (profile == null) {
@@ -30,8 +109,11 @@ class ConfigurationOrchestrator(
             return@withContext ConfigurationResult.Failure(ConfigurationError.PermissionDenied)
         }
 
-        val handle = usbDeviceManager.openConnection(device)
-            ?: return@withContext ConfigurationResult.Failure(ConfigurationError.DeviceBusy)
+        val openResult = openConnectionWithSettling(device, listOf(0L, 250L, 500L, 1000L))
+        val handle = when (openResult) {
+            is OpenResult.Success -> openResult.handle
+            is OpenResult.Failure -> return@withContext ConfigurationResult.Failure(openResult.error)
+        }
 
         handle.use { usbHandle ->
             val descriptors = usbHandle.descriptors
@@ -131,7 +213,11 @@ class ConfigurationOrchestrator(
             return@withContext false
         }
 
-        val handle = usbDeviceManager.openConnection(device) ?: return@withContext false
+        val openResult = openConnectionWithSettling(device, listOf(0L, 250L, 500L))
+        val handle = when (openResult) {
+            is OpenResult.Success -> openResult.handle
+            is OpenResult.Failure -> return@withContext false
+        }
 
         handle.use { usbHandle ->
             val descriptors = usbHandle.descriptors

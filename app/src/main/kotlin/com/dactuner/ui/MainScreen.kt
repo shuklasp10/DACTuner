@@ -89,7 +89,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 if (uiState.warnings.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = uiState.warnings.joinToString("\n"),
+                        text = uiState.warnings.joinToString("\n") { it.message },
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center

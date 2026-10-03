@@ -60,40 +60,60 @@ sealed class ConfigurationResult {
  * and fatal (cannot configure) categories.
  */
 sealed class ConfigurationError {
+    /** Actionable human-readable error message explaining what failed and how the user can resolve it. */
+    abstract val userMessage: String
 
     // --- Recoverable: user action can fix ---
 
     /** User denied USB permission. */
-    data object PermissionDenied : ConfigurationError()
+    data object PermissionDenied : ConfigurationError() {
+        override val userMessage: String = "USB permission was denied. Please grant permission when prompted."
+    }
 
     /** The USB device was not found or was disconnected. */
-    data object DeviceNotFound : ConfigurationError()
+    data object DeviceNotFound : ConfigurationError() {
+        override val userMessage: String = "DAC disconnected or not found. Please reconnect the adapter."
+    }
 
     /** The USB device is busy (another app has claimed it). */
-    data object DeviceBusy : ConfigurationError()
+    data object DeviceBusy : ConfigurationError() {
+        override val userMessage: String = "USB device is busy or in use by another app."
+    }
 
     // --- Fatal: cannot configure ---
 
     /** Failed to parse USB audio descriptors. */
-    data object DescriptorParseFailure : ConfigurationError()
+    data object DescriptorParseFailure : ConfigurationError() {
+        override val userMessage: String =
+            "Could not detect audio interface. Please ensure your earphones are firmly plugged into the adapter."
+    }
 
     /** No Feature Unit with volume control was found in the descriptors. */
-    data object NoFeatureUnitFound : ConfigurationError()
+    data object NoFeatureUnitFound : ConfigurationError() {
+        override val userMessage: String = "No hardware volume control found on this DAC."
+    }
 
     /** All interface claiming phases failed. */
-    data object AllPhasesFailed : ConfigurationError()
+    data object AllPhasesFailed : ConfigurationError() {
+        override val userMessage: String = "Failed to claim USB interface after multiple attempts."
+    }
 
     /**
      * A USB control transfer returned an error.
      *
      * @property errorCode The negative error code from controlTransfer()
      */
-    data class ControlTransferFailed(val errorCode: Int) : ConfigurationError()
+    data class ControlTransferFailed(val errorCode: Int) : ConfigurationError() {
+        override val userMessage: String = "USB control transfer failed (code $errorCode)."
+    }
 
     /**
      * An unexpected exception occurred during configuration.
      *
      * @property throwable The exception that was caught
      */
-    data class UnexpectedException(val throwable: Throwable) : ConfigurationError()
+    data class UnexpectedException(val throwable: Throwable) : ConfigurationError() {
+        override val userMessage: String =
+            "Unexpected error: ${throwable.localizedMessage ?: throwable.message ?: "Unknown error"}"
+    }
 }

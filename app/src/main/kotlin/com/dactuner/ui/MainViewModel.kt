@@ -205,7 +205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         is com.dactuner.core.ConfigurationResult.Failure -> {
                             currentState.copy(
                                 configurationStatus = ConfigurationStatus.FAILED,
-                                warnings = listOf(Warning.GeneralError("Configuration failed: ${result.error}"))
+                                warnings = listOf(Warning.GeneralError(result.error.userMessage))
                             )
                         }
                     }

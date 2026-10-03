@@ -48,6 +48,10 @@ android {
             kotlin.srcDirs("src/test/kotlin")
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

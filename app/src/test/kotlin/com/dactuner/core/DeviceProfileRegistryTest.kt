@@ -82,11 +82,11 @@ class DeviceProfileRegistryTest {
     }
 
     @Test
-    @DisplayName("Apple profile has null knownMaxVolume (discovered at runtime)")
-    fun `Apple profile discovers max volume at runtime`() {
+    @DisplayName("Apple profile has knownMaxVolume 0 (0 dB)")
+    fun `Apple profile has known max volume 0 dB`() {
         val profile = registry.getProfile(DeviceProfileRegistry.APPLE_VID, DeviceProfileRegistry.APPLE_PID)
 
-        assertNull(profile!!.knownMaxVolume)
+        assertEquals(0, profile!!.knownMaxVolume)
     }
 
     @Test
