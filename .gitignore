@@ -47,4 +47,7 @@ gradle/wrapper/gradle-wrapper.jar
 .DS_Store
 Thumbs.db
 
+# Kotlin daemon/compiler logs
+.kotlin/
+
 docs

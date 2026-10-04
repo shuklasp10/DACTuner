@@ -57,7 +57,7 @@ fun CupertinoListTile(
     subtitle: String? = null,
     icon: ImageVector? = null,
     iconColor: Color = CupertinoBlue,
-    trailing: @Composable (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
     showDivider: Boolean = true,
     onClick: (() -> Unit)? = null
 ) {
