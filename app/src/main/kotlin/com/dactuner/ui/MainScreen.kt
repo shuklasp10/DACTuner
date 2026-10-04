@@ -88,7 +88,7 @@ fun MainScreen(viewModel: MainViewModel) {
                     .navigationBarsPadding()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp)
-                    .padding(top = 18.dp, bottom = 28.dp),
+                    .padding(top = 28.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.Top,
                 horizontalAlignment = Alignment.Start
             ) {

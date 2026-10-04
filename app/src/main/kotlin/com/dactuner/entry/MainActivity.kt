@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import com.dactuner.DacTunerApplication
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         val app = application as DacTunerApplication
