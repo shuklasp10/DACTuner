@@ -3,13 +3,106 @@ package com.dactuner.usb
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import com.dactuner.util.DiagnosticsLogger
+import com.dactuner.util.LogLevel
 
 class UacDescriptorParser(
     private val logger: DiagnosticsLogger
 ) {
     fun parse(device: UsbDevice, connection: UsbDeviceConnection): UacDescriptors {
-        val rawDescriptors = connection.rawDescriptors ?: return createEmptyDescriptors()
-        return parseBytes(rawDescriptors)
+        // 1. Inspect interfaces reported directly by Android's UsbDevice framework
+        var deviceAudioControlIface = -1
+        logger.log("PARSER", "Inspecting USB device (interfaceCount=${device.interfaceCount})")
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            logger.log(
+                "PARSER",
+                "  Device iface[$i]: id=${iface.id}, class=0x${String.format("%02X", iface.interfaceClass)} (${iface.interfaceClass}), subclass=0x${String.format("%02X", iface.interfaceSubclass)} (${iface.interfaceSubclass}), endpoints=${iface.endpointCount}"
+            )
+            if (iface.interfaceClass == 0x01 && iface.interfaceSubclass == 0x01) {
+                deviceAudioControlIface = iface.id
+            }
+        }
+
+        // 2. Obtain raw configuration descriptors
+        var rawDescriptors = connection.rawDescriptors
+        if (rawDescriptors != null && rawDescriptors.isNotEmpty()) {
+            logger.log("PARSER", "connection.rawDescriptors returned ${rawDescriptors.size} bytes")
+        } else {
+            logger.log(
+                "PARSER",
+                "connection.rawDescriptors is ${if (rawDescriptors == null) "null" else "empty"}. Attempting EP0 GET_DESCRIPTOR fallback...",
+                LogLevel.WARNING
+            )
+            rawDescriptors = fetchDescriptorsViaControlTransfer(connection)
+        }
+
+        if (rawDescriptors == null || rawDescriptors.isEmpty()) {
+            if (device.interfaceCount == 1 && device.getInterface(0).interfaceClass == 0x03) {
+                logger.log(
+                    "PARSER",
+                    "Device only exposes HID interface (class 3). Earphones may not be plugged into adapter.",
+                    LogLevel.WARNING
+                )
+            } else {
+                logger.log(
+                    "PARSER",
+                    "Failed to retrieve USB descriptors via rawDescriptors and controlTransfer",
+                    LogLevel.ERROR
+                )
+            }
+            return createEmptyDescriptors()
+        }
+
+        val descriptors = parseBytes(rawDescriptors)
+        logger.log(
+            "PARSER",
+            "Parsed descriptors: UAC=${descriptors.uacVersion}, AudioControl=${descriptors.audioControlInterfaceNumber}, FeatureUnits=${descriptors.featureUnits.size}, Streaming=${descriptors.streamingInterfaces}"
+        )
+
+        // 3. Fallback: If raw descriptor walk missed AudioControl interface number but device framework has it
+        if (descriptors.audioControlInterfaceNumber < 0 && deviceAudioControlIface >= 0) {
+            logger.log(
+                "PARSER",
+                "Setting AudioControl interface number from device framework fallback: $deviceAudioControlIface",
+                LogLevel.WARNING
+            )
+            return descriptors.copy(audioControlInterfaceNumber = deviceAudioControlIface)
+        }
+
+        return descriptors
+    }
+
+    /**
+     * Standard USB GET_DESCRIPTOR request to Endpoint 0 for configuration descriptor 0.
+     * Used when [UsbDeviceConnection.getRawDescriptors] returns null or is unavailable.
+     */
+    private fun fetchDescriptorsViaControlTransfer(connection: UsbDeviceConnection): ByteArray? {
+        val header = ByteArray(9)
+        // bmRequestType: 0x80 (Device-to-Host | Standard | Device)
+        // bRequest: 0x06 (GET_DESCRIPTOR)
+        // wValue: (0x02 shl 8) | 0 (Descriptor Type Configuration = 2, index 0)
+        // wIndex: 0
+        val readHeader = connection.controlTransfer(0x80, 0x06, 0x0200, 0, header, header.size, 1000)
+        if (readHeader < 4) {
+            logger.log("PARSER", "GET_DESCRIPTOR header failed (returned $readHeader)", LogLevel.WARNING)
+            return null
+        }
+
+        val totalLength = (header[2].toInt() and 0xFF) or ((header[3].toInt() and 0xFF) shl 8)
+        if (totalLength < 9 || totalLength > 4096) {
+            logger.log("PARSER", "Invalid wTotalLength in configuration header: $totalLength", LogLevel.WARNING)
+            return null
+        }
+
+        val fullConfig = ByteArray(totalLength)
+        val readTotal = connection.controlTransfer(0x80, 0x06, 0x0200, 0, fullConfig, fullConfig.size, 1000)
+        return if (readTotal == totalLength) {
+            logger.log("PARSER", "Successfully fetched $totalLength descriptor bytes via EP0 GET_DESCRIPTOR")
+            fullConfig
+        } else {
+            logger.log("PARSER", "GET_DESCRIPTOR read $readTotal bytes, expected $totalLength", LogLevel.WARNING)
+            null
+        }
     }
 
     // Exposed for testing

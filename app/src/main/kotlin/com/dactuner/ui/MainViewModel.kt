@@ -70,10 +70,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val isExpectedReset = expectedResetVidPid == (vendorId to productId) &&
                 System.currentTimeMillis() < expectedResetUntil
 
-            if (!isExpectedReset && 
-                _uiState.value.connectionStatus != ConnectionStatus.DISCONNECTED && 
-                _uiState.value.deviceInfo?.vidPid == vidPidStr) {
-                logger.log("VIEWMODEL", "Ignoring duplicate connection event for $vidPidStr")
+            if (!isExpectedReset && _uiState.value.configurationStatus == ConfigurationStatus.CONFIGURING) {
+                logger.log("VIEWMODEL", "Configuration already in progress for $vidPidStr, ignoring event")
                 return
             }
 
@@ -86,6 +84,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { state ->
                 state.copy(
                     connectionStatus = if (isExpectedReset) ConnectionStatus.CONFIGURED else ConnectionStatus.CONNECTED,
+                    configurationStatus = if (isExpectedReset) ConfigurationStatus.SUCCESS else ConfigurationStatus.IDLE,
+                    warnings = emptyList(),
                     deviceInfo = DeviceInfo(
                         name = profile.name,
                         manufacturer = profile.manufacturer,
@@ -164,7 +164,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun configureConnectedDac() {
         val state = _uiState.value
-        if (state.connectionStatus != ConnectionStatus.CONNECTED) return
+        if (state.connectionStatus == ConnectionStatus.DISCONNECTED ||
+            state.configurationStatus == ConfigurationStatus.CONFIGURING) {
+            return
+        }
         
         viewModelScope.launch {
             _uiState.update { it.copy(configurationStatus = ConfigurationStatus.CONFIGURING) }
