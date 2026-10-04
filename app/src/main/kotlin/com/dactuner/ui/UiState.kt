@@ -76,6 +76,15 @@ data class DeviceInfo(
     val variant: AdapterVariant = AdapterVariant.UNKNOWN
 )
 
+/** Returns a clean display name for the adapter variant. */
+val AdapterVariant.displayName: String
+    get() = when (this) {
+        AdapterVariant.US_A2049 -> "US Model (A2049, 1.0 Vrms)"
+        AdapterVariant.EU_A2155 -> "EU Model (A2155, 0.5 Vrms)"
+        AdapterVariant.UNKNOWN -> "Standard / Auto-detected"
+    }
+
+
 /**
  * Warning types that can be displayed as banners in the UI.
  */

@@ -259,4 +259,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         app.preferencesManager.showNotifications = enabled
         _uiState.update { it.copy(settings = it.settings.copy(showNotifications = enabled)) }
     }
+
+    /**
+     * Toggles verbose debug logging mode.
+     */
+    fun onDebugModeToggled(enabled: Boolean) {
+        app.preferencesManager.debugModeEnabled = enabled
+        _uiState.update { it.copy(settings = it.settings.copy(debugModeEnabled = enabled)) }
+    }
+
+    /**
+     * Retrieves all recorded in-memory diagnostic logs.
+     */
+    fun getLogEntries(): List<com.dactuner.util.LogEntry> = app.diagnosticsLogger.getLogEntries()
+
+    /**
+     * Formats all recorded diagnostic logs into a shareable string.
+     */
+    fun exportLogs(): String = app.diagnosticsLogger.exportToString()
+
+    /**
+     * Clears in-memory diagnostic logs.
+     */
+    fun clearLogs() = app.diagnosticsLogger.clear()
 }
+

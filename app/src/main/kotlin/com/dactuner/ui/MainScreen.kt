@@ -1,9 +1,8 @@
 package com.dactuner.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,280 +16,363 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dactuner.ui.components.AdvancedSection
+import com.dactuner.ui.components.CupertinoBanner
+import com.dactuner.ui.components.CupertinoButton
+import com.dactuner.ui.components.CupertinoCard
+import com.dactuner.ui.components.CupertinoIcons
+import com.dactuner.ui.components.CupertinoListTile
+import com.dactuner.ui.components.CupertinoStatusCapsule
+import com.dactuner.ui.components.CupertinoSwitch
+import com.dactuner.ui.components.DebugLogSection
+import com.dactuner.ui.theme.CupertinoBackgroundDark
+import com.dactuner.ui.theme.CupertinoBlue
+import com.dactuner.ui.theme.CupertinoGray
+import com.dactuner.ui.theme.CupertinoGreen
+import com.dactuner.ui.theme.CupertinoIndigo
+import com.dactuner.ui.theme.CupertinoLabelDark
+import com.dactuner.ui.theme.CupertinoLabelSecondaryDark
+import com.dactuner.ui.theme.CupertinoOrange
+import com.dactuner.ui.theme.CupertinoPurple
+import com.dactuner.ui.theme.CupertinoRed
+import com.dactuner.ui.theme.CupertinoTeal
 import com.dactuner.ui.theme.DacTunerTheme
-import com.dactuner.ui.theme.StatusConfigured
-import com.dactuner.ui.theme.StatusConnected
-import com.dactuner.ui.theme.StatusDisconnected
-import com.dactuner.ui.theme.StatusFailed
+import com.dactuner.ui.theme.DacTunerTypography
 
 /**
- * Main screen composable for DACTuner.
+ * Main screen composable for DACTuner styled after the latest iOS 17/18 Cupertino design language.
  *
- * Phase 1: Displays connection status with animated status indicator.
- * Phase 5: Will include full UI with configure button, settings, warnings,
- * advanced section, and debug log viewer.
+ * Implements:
+ * - Large navigation title with status accessories
+ * - Dynamic Island-inspired real-time hardware status capsule
+ * - Inset grouped table cards with indented dividers and squircle icons
+ * - Authentic Cupertino toggle switches with spring physics
+ * - Bouncy primary action button with haptic feedback
+ * - Deep-linked warning callouts (Samsung Media Volume Limit, EU model info)
+ * - Expandable low-level USB specifications and real-time event console
  *
- * The entire UI is a function of [UiState] — no side effects in composables.
+ * The entire screen is driven exclusively from [UiState] — zero side-effects in composables.
  */
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    val isConnected = uiState.connectionStatus == ConnectionStatus.CONNECTED ||
+            uiState.connectionStatus == ConnectionStatus.CONFIGURED
+    val isConfiguring = uiState.configurationStatus == ConfigurationStatus.CONFIGURING
 
     DacTunerTheme {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+            color = CupertinoBackgroundDark
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Top
+                    .padding(horizontal = 16.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.Top,
+                horizontalAlignment = Alignment.Start
             ) {
-                // App title
-                Text(
-                    text = "DACTuner",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = MaterialTheme.colorScheme.primary
+                // Top iOS Navigation Bar / Large Title
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "DACTuner",
+                            style = DacTunerTypography.headlineLarge,
+                            color = CupertinoLabelDark
+                        )
+                        Text(
+                            text = "Hardware Audio Controller",
+                            style = DacTunerTypography.bodySmall,
+                            color = CupertinoLabelSecondaryDark
+                        )
+                    }
+
+                    // Top right Apple DAC accessory badge
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(CupertinoBlue.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = CupertinoIcons.UsbCable,
+                            contentDescription = "USB DAC",
+                            tint = CupertinoBlue,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Dynamic Live Hardware Status Capsule
+                CupertinoStatusCapsule(uiState = uiState)
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Warning & Notice Banners (Samsung Volume Limit, EU Adapter, Replug)
+                uiState.warnings.forEach { warning ->
+                    when (warning) {
+                        is Warning.SamsungVolumeLimit -> {
+                            CupertinoBanner(
+                                message = warning.message,
+                                tint = CupertinoOrange,
+                                icon = CupertinoIcons.WarningTriangle,
+                                actionLabel = "Open Sound Settings",
+                                onAction = {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS))
+                                    } catch (_: Exception) {
+                                        // Fallback to general settings if vendor restricts sound settings intent
+                                        context.startActivity(Intent(Settings.ACTION_SETTINGS))
+                                    }
+                                }
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                        is Warning.EuAdapter -> {
+                            CupertinoBanner(
+                                message = warning.message,
+                                tint = CupertinoBlue,
+                                icon = CupertinoIcons.InfoCircle
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                        is Warning.GeneralError -> {
+                            CupertinoBanner(
+                                message = warning.message,
+                                tint = CupertinoRed,
+                                icon = CupertinoIcons.WarningTriangle
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                        is Warning.ConfigPartialSuccess -> {
+                            CupertinoBanner(
+                                message = warning.message,
+                                tint = CupertinoOrange,
+                                icon = CupertinoIcons.WarningTriangle
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                        is Warning.ReplugRequired -> {
+                            CupertinoBanner(
+                                message = warning.message,
+                                tint = CupertinoTeal,
+                                icon = CupertinoIcons.InfoCircle
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                    }
+                }
+
+                // Primary Cupertino Action Button
+                CupertinoButton(
+                    text = when {
+                        !isConnected -> "Plug in Apple USB-C DAC to Configure"
+                        isConfiguring -> "Configuring Audio Pipe..."
+                        uiState.connectionStatus == ConnectionStatus.CONFIGURED -> "Reconfigure DAC Volume"
+                        else -> "Configure DAC Volume"
+                    },
+                    onClick = { viewModel.configureConnectedDac() },
+                    enabled = isConnected && !isConfiguring,
+                    isLoading = isConfiguring,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Inset Group 1: Device Status
+                CupertinoCard(
+                    title = "Device Status",
+                    footer = "DACTuner programs the hardware mixer Feature Unit to 0 dB, overcoming the 14 dB attenuation on Android."
+                ) {
+                    // Row 1: Connection Status
+                    CupertinoListTile(
+                        title = "Connection State",
+                        subtitle = when (uiState.connectionStatus) {
+                            ConnectionStatus.DISCONNECTED -> "No supported DAC attached"
+                            ConnectionStatus.CONNECTED -> "Attached, ready to tune"
+                            ConnectionStatus.CONFIGURED -> "Active at 0 dB max hardware volume"
+                            ConnectionStatus.FAILED -> "Configuration failed"
+                        },
+                        icon = CupertinoIcons.UsbCable,
+                        iconColor = when (uiState.connectionStatus) {
+                            ConnectionStatus.CONFIGURED -> CupertinoGreen
+                            ConnectionStatus.CONNECTED -> CupertinoOrange
+                            ConnectionStatus.FAILED -> CupertinoRed
+                            else -> CupertinoGray
+                        },
+                        trailing = {
+                            Text(
+                                text = when (uiState.connectionStatus) {
+                                    ConnectionStatus.DISCONNECTED -> "Disconnected"
+                                    ConnectionStatus.CONNECTED -> "Ready"
+                                    ConnectionStatus.CONFIGURED -> "Configured ✓"
+                                    ConnectionStatus.FAILED -> "Failed ✗"
+                                },
+                                style = DacTunerTypography.bodyMedium,
+                                color = when (uiState.connectionStatus) {
+                                    ConnectionStatus.CONFIGURED -> CupertinoGreen
+                                    ConnectionStatus.CONNECTED -> CupertinoOrange
+                                    ConnectionStatus.FAILED -> CupertinoRed
+                                    else -> CupertinoLabelSecondaryDark
+                                }
+                            )
+                        }
+                    )
+
+                    // Row 2: Hardware Mixer Gain
+                    CupertinoListTile(
+                        title = "Hardware Gain",
+                        subtitle = "USB Audio Class Feature Unit mixer attenuation",
+                        icon = CupertinoIcons.SpeakerWave,
+                        iconColor = CupertinoTeal,
+                        trailing = {
+                            Text(
+                                text = if (uiState.connectionStatus == ConnectionStatus.CONFIGURED) {
+                                    "0.0 dB (100%)"
+                                } else {
+                                    uiState.deviceInfo?.volumeDb ?: "—"
+                                },
+                                style = DacTunerTypography.bodyMedium,
+                                color = if (uiState.connectionStatus == ConnectionStatus.CONFIGURED) {
+                                    CupertinoGreen
+                                } else {
+                                    CupertinoLabelSecondaryDark
+                                }
+                            )
+                        }
+                    )
+
+                    // Row 3: Adapter Model Variant
+                    CupertinoListTile(
+                        title = "Hardware Model",
+                        subtitle = uiState.deviceInfo?.vidPid ?: "Apple 05AC:110A",
+                        icon = CupertinoIcons.InfoCircle,
+                        iconColor = CupertinoPurple,
+                        showDivider = false,
+                        trailing = {
+                            Text(
+                                text = uiState.deviceInfo?.variant?.displayName ?: "Apple USB-C",
+                                style = DacTunerTypography.bodyMedium,
+                                color = CupertinoLabelSecondaryDark
+                            )
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Inset Group 2: Preferences
+                CupertinoCard(
+                    title = "Preferences",
+                    footer = "Configured settings persist across USB reconnections and device reboots."
+                ) {
+                    // Auto-Configure on Connect toggle
+                    CupertinoListTile(
+                        title = "Auto-Configure on Connect",
+                        subtitle = "Maximizes volume immediately upon DAC attachment",
+                        icon = CupertinoIcons.Bolt,
+                        iconColor = CupertinoGreen,
+                        trailing = {
+                            CupertinoSwitch(
+                                checked = uiState.settings.autoConfigureEnabled,
+                                onCheckedChange = { viewModel.onAutoConfigureToggled(it) }
+                            )
+                        }
+                    )
+
+                    // Silent Background Mode toggle
+                    CupertinoListTile(
+                        title = "Silent Background Mode",
+                        subtitle = "Tunes DAC silently without bringing app to foreground",
+                        icon = CupertinoIcons.Moon,
+                        iconColor = CupertinoBlue,
+                        trailing = {
+                            CupertinoSwitch(
+                                checked = uiState.settings.backgroundModeEnabled,
+                                onCheckedChange = { viewModel.onBackgroundModeToggled(it) }
+                            )
+                        }
+                    )
+
+                    // Transient Notifications toggle
+                    CupertinoListTile(
+                        title = "Show Notifications",
+                        subtitle = "Display transient toast when volume is maximized",
+                        icon = CupertinoIcons.Bell,
+                        iconColor = CupertinoOrange,
+                        trailing = {
+                            CupertinoSwitch(
+                                checked = uiState.settings.showNotifications,
+                                onCheckedChange = { viewModel.onShowNotificationsToggled(it) }
+                            )
+                        }
+                    )
+
+                    // Verbose Debug Logging toggle
+                    CupertinoListTile(
+                        title = "Debug Logging",
+                        subtitle = "Capture USB descriptors and control transfer dumps",
+                        icon = CupertinoIcons.Terminal,
+                        iconColor = CupertinoIndigo,
+                        showDivider = false,
+                        trailing = {
+                            CupertinoSwitch(
+                                checked = uiState.settings.debugModeEnabled,
+                                onCheckedChange = { viewModel.onDebugModeToggled(it) }
+                            )
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Inset Group 3: Expandable Hardware USB Descriptors
+                AdvancedSection(deviceInfo = uiState.deviceInfo)
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Inset Group 4: Expandable Diagnostic Console & Logs
+                DebugLogSection(
+                    logs = viewModel.getLogEntries(),
+                    onExportLogs = { viewModel.exportLogs() },
+                    onClearLogs = { viewModel.clearLogs() }
                 )
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                // Status card
-                DeviceStatusCard(uiState = uiState)
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Configure button
-                if (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONFIGURED) {
-                    androidx.compose.material3.Button(
-                        onClick = { viewModel.configureConnectedDac() },
-                        enabled = uiState.configurationStatus != ConfigurationStatus.CONFIGURING,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (uiState.configurationStatus == ConfigurationStatus.CONFIGURING) {
-                            Text("Configuring...")
-                        } else {
-                            Text("Configure DAC Volume")
-                        }
-                    }
-                }
-                
-                if (uiState.warnings.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = uiState.warnings.joinToString("\n") { it.message },
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Settings Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text(
-                            text = "Settings",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Silent Background Config toggle
-                        SettingToggleRow(
-                            title = "Silent Background Config",
-                            subtitle = "Configure DAC in background without opening app",
-                            checked = uiState.settings.backgroundModeEnabled,
-                            onCheckedChange = { viewModel.onBackgroundModeToggled(it) }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 12.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
-                        )
-
-                        // Show Notifications toggle
-                        SettingToggleRow(
-                            title = "Show Notifications",
-                            subtitle = "Display transient notification when configured",
-                            checked = uiState.settings.showNotifications,
-                            onCheckedChange = { viewModel.onShowNotificationsToggled(it) }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 12.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
-                        )
-
-                        // Auto-Configure toggle
-                        SettingToggleRow(
-                            title = "Auto Configure",
-                            subtitle = "Automatically maximize hardware volume on connect",
-                            checked = uiState.settings.autoConfigureEnabled,
-                            onCheckedChange = { viewModel.onAutoConfigureToggled(it) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Reusable toggle row for settings.
- */
-@Composable
-private fun SettingToggleRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 16.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange
-        )
-    }
-}
-
-/**
- * Card showing the DAC connection status with an animated indicator.
- *
- * Displays:
- * - Color-coded status circle (gray/amber/green/red)
- * - Device name or "No supported DAC connected"
- * - Status description text
- */
-@Composable
-private fun DeviceStatusCard(uiState: UiState) {
-    // Animate status indicator color transitions
-    val statusColor by animateColorAsState(
-        targetValue = when (uiState.connectionStatus) {
-            ConnectionStatus.DISCONNECTED -> StatusDisconnected
-            ConnectionStatus.CONNECTED -> StatusConnected
-            ConnectionStatus.CONFIGURED -> StatusConfigured
-            ConnectionStatus.FAILED -> StatusFailed
-        },
-        animationSpec = tween(durationMillis = 500),
-        label = "statusColor"
-    )
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Animated status indicator
-            Box(
-                modifier = Modifier
-                    .size(80.dp)
-                    .background(
-                        color = statusColor.copy(alpha = 0.12f),
-                        shape = CircleShape
-                    )
-                    .border(
-                        width = 2.dp,
-                        color = statusColor.copy(alpha = 0.5f),
-                        shape = CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(color = statusColor, shape = CircleShape)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Device name or fallback text
-            Text(
-                text = uiState.deviceInfo?.name ?: "No supported DAC connected",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Status description
-            Text(
-                text = when (uiState.connectionStatus) {
-                    ConnectionStatus.DISCONNECTED ->
-                        "Plug in your Apple USB-C adapter to get started"
-                    ConnectionStatus.CONNECTED ->
-                        "Connected \u2014 ready to configure"
-                    ConnectionStatus.CONFIGURED ->
-                        "\u2713 Configured at maximum volume"
-                    ConnectionStatus.FAILED ->
-                        "Configuration failed \u2014 see details below"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-
-            // Show VID/PID when connected
-            if (uiState.deviceInfo != null) {
-                Spacer(modifier = Modifier.height(16.dp))
+                // iOS Footer Brand Tag
                 Text(
-                    text = "VID/PID: ${uiState.deviceInfo.vidPid}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    text = "DACTuner for Android • Built for Apple USB-C DAC",
+                    style = DacTunerTypography.bodySmall,
+                    color = CupertinoLabelSecondaryDark.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
                 )
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
